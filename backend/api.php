@@ -187,7 +187,7 @@ switch ($action) {
     $categorias = $pdo->query('SELECT name FROM categories ORDER BY name')->fetchAll(PDO::FETCH_COLUMN);
 
     $users = $pdo->query('
-      SELECT u.id, u.role, u.name, u.headline, u.bio, u.avatar_color AS avatarColor, u.avatar_url AS avatarUrl, u.blocked, u.email,
+      SELECT u.id, u.role, u.name, u.headline, u.bio, u.avatar_color AS avatarColor, u.avatar_url AS avatarUrl, u.cover_url AS coverUrl, u.blocked, u.email,
              u.email_verified AS emailVerified, u.two_factor_enabled AS twoFactorEnabled, u.deactivated,
              (SELECT COUNT(*) FROM follows f WHERE f.artist_id = u.id) AS followers
       FROM users u ORDER BY u.name
@@ -666,6 +666,25 @@ switch ($action) {
     if (!move_uploaded_file($_FILES['image']['tmp_name'], $dir . '/' . $filename)) json_error('Falha ao salvar a imagem', 500);
     $url = 'uploads/avatars/' . $filename;
     $pdo->prepare('UPDATE users SET avatar_url = ? WHERE id = ?')->execute([$url, $me['id']]);
+    json_out(['ok' => true, 'url' => $url]);
+  }
+
+  case 'upload_cover': {
+    // Capa (banner) da página pública do artista.
+    $me = require_role('artist', 'admin');
+    if (empty($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) json_error('Envie um arquivo de imagem válido');
+    if ($_FILES['image']['size'] > 8 * 1024 * 1024) json_error('Imagem muito grande (máximo 8MB)');
+    $info = getimagesize($_FILES['image']['tmp_name']);
+    if ($info === false) json_error('Arquivo não é uma imagem válida');
+    $ext = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'][$info['mime']] ?? null;
+    if (!$ext) json_error('Formato não suportado. Use JPG, PNG ou WebP.');
+
+    $dir = __DIR__ . '/../uploads/covers';
+    if (!is_dir($dir) && !mkdir($dir, 0755, true)) json_error('Não foi possível preparar a pasta de upload', 500);
+    $filename = 'capa-' . $me['id'] . '-' . time() . '.' . $ext;
+    if (!move_uploaded_file($_FILES['image']['tmp_name'], $dir . '/' . $filename)) json_error('Falha ao salvar a imagem', 500);
+    $url = 'uploads/covers/' . $filename;
+    $pdo->prepare('UPDATE users SET cover_url = ? WHERE id = ?')->execute([$url, $me['id']]);
     json_out(['ok' => true, 'url' => $url]);
   }
 

@@ -17,6 +17,7 @@ CREATE TABLE users (
   bio           TEXT,
   avatar_color  TEXT,               -- cor hex usada no avatar de iniciais
   avatar_url    TEXT,               -- foto de perfil enviada pelo usuário
+  cover_url     TEXT,               -- capa da página pública do artista
   blocked       INTEGER NOT NULL DEFAULT 0 CHECK (blocked IN (0,1)),
   email_verified          INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0,1)),
   email_verify_token      TEXT,

@@ -20,6 +20,7 @@ CREATE TABLE users (
   bio           TEXT,
   avatar_color  VARCHAR(7),
   avatar_url    VARCHAR(255) NULL,           -- foto de perfil enviada pelo usuário
+  cover_url     VARCHAR(255) NULL,           -- capa da página pública do artista
   blocked       TINYINT(1) NOT NULL DEFAULT 0,
   email_verified          TINYINT(1) NOT NULL DEFAULT 0,
   email_verify_token      VARCHAR(64) NULL,
