@@ -1065,6 +1065,7 @@ switch ($action) {
 
     // Recalcula o frete no servidor (nunca confia no preço mandado pelo cliente).
     $shippingCents = 0;
+    $shippingLabels = []; // ex.: "Correios PAC" por artista, pra o admin saber o serviço escolhido
     if ($shippingSel && strlen($destCep) === 8) {
       $placeholders = implode(',', array_fill(0, count($ids), '?'));
       $pkgStmt = $pdo->prepare("
@@ -1093,6 +1094,8 @@ switch ($action) {
           foreach ($quotes as $q) {
             if (is_array($q) && !isset($q['error']) && isset($q['price']) && (int)($q['id'] ?? -1) === (int)$optionId) {
               $shippingCents += (int)round(((float)$q['price']) * 100);
+              $label = trim(($q['company']['name'] ?? '') . ' ' . ($q['name'] ?? ''));
+              if ($label !== '') $shippingLabels[] = $label;
               break;
             }
           }
@@ -1118,8 +1121,9 @@ switch ($action) {
 
       // O pedido nasce aguardando pagamento — só vira "pago" (e a obra só é
       // marcada como vendida, via trigger) quando o Mercado Pago confirmar.
-      $ins = $pdo->prepare('INSERT INTO orders (buyer_id, address_id, status, shipping_cents) VALUES (?, ?, "pending_payment", ?)');
-      $ins->execute([$me['id'], $addressId, $shippingCents]);
+      $shippingService = $shippingLabels ? implode('; ', array_unique($shippingLabels)) : null;
+      $ins = $pdo->prepare('INSERT INTO orders (buyer_id, address_id, status, shipping_cents, shipping_service) VALUES (?, ?, "pending_payment", ?, ?)');
+      $ins->execute([$me['id'], $addressId, $shippingCents, $shippingService]);
       $orderId = (int)$pdo->lastInsertId();
 
       $priceStmt = $pdo->prepare('SELECT price_cents, title FROM artworks WHERE id = ? AND approved = 1 AND sold = 0');
@@ -1226,7 +1230,7 @@ switch ($action) {
     $me = require_login();
     $stmt = $pdo->prepare('
       SELECT o.id, o.status, o.payment_method AS paymentMethod, o.total_cents AS totalCents,
-             o.shipping_cents AS shippingCents, o.created_at AS createdAt,
+             o.shipping_cents AS shippingCents, o.shipping_service AS shippingService, o.created_at AS createdAt,
              a.recipient_name AS recipientName, a.street, a.number, a.neighborhood, a.city, a.state
       FROM orders o
       LEFT JOIN addresses a ON a.id = o.address_id
@@ -1263,9 +1267,12 @@ switch ($action) {
     require_role('admin');
     $orders = $pdo->query('
       SELECT o.id, o.status, o.payment_method AS paymentMethod, o.total_cents AS totalCents, o.created_at AS createdAt,
-             u.name AS buyerName, u.email AS buyerEmail
+             o.shipping_cents AS shippingCents, o.shipping_service AS shippingService,
+             u.name AS buyerName, u.email AS buyerEmail,
+             a.recipient_name AS recipientName, a.cep, a.street, a.number, a.complement, a.neighborhood, a.city, a.state
       FROM orders o
       JOIN users u ON u.id = o.buyer_id
+      LEFT JOIN addresses a ON a.id = o.address_id
       WHERE o.status != "cart"
       ORDER BY o.created_at DESC
     ')->fetchAll();
@@ -1273,6 +1280,8 @@ switch ($action) {
     foreach ($orders as &$o) {
       $o['total'] = $o['totalCents'] / 100;
       unset($o['totalCents']);
+      $o['shipping'] = ((int)$o['shippingCents']) / 100;
+      unset($o['shippingCents']);
       $itemsStmt->execute([$o['id']]);
       $o['itemTitles'] = $itemsStmt->fetchAll(PDO::FETCH_COLUMN);
     }
