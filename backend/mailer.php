@@ -33,6 +33,11 @@ function send_mail(string $toEmail, string $toName, string $subject, string $htm
     $mail->Password = MAIL_SMTP_PASS;
     $mail->SMTPSecure = MAIL_SMTP_SECURE === 'tls' ? PHPMailer::ENCRYPTION_STARTTLS : PHPMailer::ENCRYPTION_SMTPS;
     $mail->Port = MAIL_SMTP_PORT;
+    $mail->Timeout = 20;
+    // Em hospedagem compartilhada o servidor de mail às vezes apresenta um
+    // certificado que não bate com o hostname usado (ex.: localhost) — relaxar
+    // a verificação evita falha de handshake sem comprometer a entrega.
+    $mail->SMTPOptions = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true]];
     $mail->CharSet = 'UTF-8';
     $mail->setFrom(MAIL_FROM_ADDR, MAIL_FROM_NAME);
     $mail->addAddress($toEmail, $toName);
@@ -43,7 +48,8 @@ function send_mail(string $toEmail, string $toName, string $subject, string $htm
     $mail->send();
     return true;
   } catch (PHPMailerException|Throwable $e) {
-    error_log('[mail] Falha ao enviar e-mail para ' . $toEmail . ': ' . $mail->ErrorInfo);
+    $GLOBALS['mail_last_error'] = $mail->ErrorInfo ?: $e->getMessage();
+    error_log('[mail] Falha ao enviar e-mail para ' . $toEmail . ': ' . $GLOBALS['mail_last_error']);
     return false;
   }
 }
@@ -78,6 +84,25 @@ function send_two_factor_email(string $toEmail, string $toName, string $code): b
     <p style="font-size:12px;color:#8C8679">Se você não tentou entrar na sua conta agora, ignore este e-mail.</p>
   ');
   return send_mail($toEmail, $toName, 'Seu código de acesso — Galeria Millia', $html);
+}
+
+function send_obra_approved_email(string $toEmail, string $toName, string $obraTitle): bool {
+  $link = SITE_BASE_URL;
+  $html = mail_layout('Sua obra foi aprovada', '
+    <p>Olá, ' . htmlspecialchars($toName) . '!</p>
+    <p>Boa notícia: a obra <b>' . htmlspecialchars($obraTitle) . '</b> passou pela curadoria e já está <b>publicada</b> na Galeria Millia.</p>
+    <p style="margin:24px 0"><a href="' . $link . '" style="background:#221E19;color:#F6F4EF;text-decoration:none;padding:12px 22px;border-radius:3px;display:inline-block">Ver na galeria</a></p>
+  ');
+  return send_mail($toEmail, $toName, 'Sua obra foi aprovada — Galeria Millia', $html);
+}
+
+function send_obra_submitted_email(string $toEmail, string $toName, string $obraTitle): bool {
+  $html = mail_layout('Obra enviada para a curadoria', '
+    <p>Olá, ' . htmlspecialchars($toName) . '!</p>
+    <p>Recebemos a obra <b>' . htmlspecialchars($obraTitle) . '</b>. Ela está <b>em análise</b> pela curadoria — assim que for aprovada, você recebe um aviso e ela aparece publicada na galeria.</p>
+    <p style="font-size:12px;color:#8C8679">Você pode acompanhar o status em "Minhas obras" no seu painel.</p>
+  ');
+  return send_mail($toEmail, $toName, 'Obra recebida para curadoria — Galeria Millia', $html);
 }
 
 function send_password_reset_email(string $toEmail, string $toName, string $token): bool {

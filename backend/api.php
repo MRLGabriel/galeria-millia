@@ -184,7 +184,9 @@ switch ($action) {
     $me = current_user();
     $isAdmin = $me && $me['role'] === 'admin';
 
-    $categorias = $pdo->query('SELECT name FROM categories ORDER BY name')->fetchAll(PDO::FETCH_COLUMN);
+    $categorias = $pdo->query('SELECT name FROM categories WHERE approved = 1 ORDER BY name')->fetchAll(PDO::FETCH_COLUMN);
+    // Categorias sugeridas por artistas, ainda aguardando o admin aprovar.
+    $pendingCategorias = $pdo->query('SELECT name FROM categories WHERE approved = 0 ORDER BY name')->fetchAll(PDO::FETCH_COLUMN);
 
     $users = $pdo->query('
       SELECT u.id, u.role, u.name, u.headline, u.bio, u.avatar_color AS avatarColor, u.avatar_url AS avatarUrl, u.cover_url AS coverUrl, u.blocked, u.email,
@@ -293,6 +295,7 @@ switch ($action) {
     json_out([
       'me' => $me,
       'categorias' => $categorias,
+      'pendingCategorias' => $pendingCategorias,
       'users' => $users,
       'obras' => $obras,
       'comments' => $comments,
@@ -420,6 +423,25 @@ switch ($action) {
       ->execute([$token, date('Y-m-d H:i:s', time() + 86400), date('Y-m-d H:i:s'), $me['id']]);
     send_verification_email($me['email'], $me['name'], $token);
     json_out(['ok' => true]);
+  }
+
+  case 'mail_test': {
+    // Diagnóstico (admin): tenta enviar um e-mail de verdade e devolve o
+    // resultado + o erro exato do SMTP, pra descobrir por que não chega.
+    $me = require_role('admin');
+    $b = body();
+    $to = trim($b['to'] ?? $me['email']);
+    $GLOBALS['mail_last_error'] = null;
+    $ok = send_mail($to, $me['name'], 'Teste de envio — Galeria Millia', mail_layout('Teste de envio', '<p>Se você recebeu este e-mail, o SMTP de produção está funcionando.</p>'));
+    json_out([
+      'ok' => $ok,
+      'to' => $to,
+      'host' => MAIL_SMTP_HOST,
+      'port' => MAIL_SMTP_PORT,
+      'secure' => MAIL_SMTP_SECURE,
+      'mode' => MAIL_MODE,
+      'error' => $GLOBALS['mail_last_error'] ?? null,
+    ]);
   }
 
   case 'set_two_factor': {
@@ -565,8 +587,22 @@ switch ($action) {
     $b = body();
     $title = trim($b['title'] ?? '');
     if ($title === '') json_error('Dê um título à obra');
-    $catId = category_id_by_name($pdo, $b['cat'] ?? '');
-    if ($catId === null) json_error('Categoria inválida');
+    $catName = trim($b['cat'] ?? '');
+    $catId = category_id_by_name($pdo, $catName);
+    if ($catId === null) {
+      // Artista sugeriu uma categoria nova: cria como pendente (approved=0),
+      // pra o admin aprovar depois. Sem a flag, mantém o erro de sempre.
+      if (!empty($b['proposeCat']) && $catName !== '') {
+        try {
+          $pdo->prepare('INSERT INTO categories (name, approved) VALUES (?, 0)')->execute([$catName]);
+          $catId = (int)$pdo->lastInsertId();
+        } catch (PDOException $e) {
+          if ($e->getCode() === '23000') $catId = category_id_by_name($pdo, $catName);
+          else throw $e;
+        }
+      }
+      if ($catId === null) json_error('Categoria inválida');
+    }
     $price = round((float)($b['price'] ?? 0) * 100);
     if ($price <= 0) json_error('Informe um preço válido, maior que zero');
     $colId = collection_id_for($pdo, (int)$me['id'], $b['collection'] ?? '');
@@ -601,6 +637,8 @@ switch ($action) {
                              package_weight_kg, package_length_cm, package_width_cm, package_height_cm, approved, sold)
                              VALUES (?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');
       $ins->execute([$me['id'], $catId, $colId, $title, $desc, $price, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight]);
+      // Confirma pro artista que a obra entrou na fila de curadoria.
+      send_obra_submitted_email($me['email'], $me['name'], $title);
       json_out(['ok' => true, 'id' => (int)$pdo->lastInsertId()]);
     }
   }
@@ -709,7 +747,12 @@ switch ($action) {
   case 'approve_obra': {
     require_role('admin');
     $b = body();
-    $pdo->prepare('UPDATE artworks SET approved = 1 WHERE id = ?')->execute([(int)($b['id'] ?? 0)]);
+    $id = (int)($b['id'] ?? 0);
+    $pdo->prepare('UPDATE artworks SET approved = 1 WHERE id = ?')->execute([$id]);
+    // Avisa o artista por e-mail que a obra foi publicada.
+    $q = $pdo->prepare('SELECT a.title, u.email, u.name FROM artworks a JOIN users u ON u.id = a.artist_id WHERE a.id = ?');
+    $q->execute([$id]);
+    if ($row = $q->fetch()) send_obra_approved_email($row['email'], $row['name'], $row['title']);
     json_out(['ok' => true]);
   }
 
@@ -855,6 +898,15 @@ switch ($action) {
       if ($e->getCode() === '23000') json_error('Categoria já existe');
       throw $e;
     }
+    json_out(['ok' => true]);
+  }
+
+  case 'approve_category': {
+    require_role('admin');
+    $b = body();
+    $name = trim($b['name'] ?? '');
+    if ($name === '') json_error('Nome inválido');
+    $pdo->prepare('UPDATE categories SET approved = 1 WHERE name = ?')->execute([$name]);
     json_out(['ok' => true]);
   }
 
