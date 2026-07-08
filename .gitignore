@@ -1,0 +1,6 @@
+# Configuração de produção com segredos reais (banco, tokens, senha de e-mail).
+# Nunca versionar — fica só local e é enviada manualmente pro servidor.
+backend/config.producao.php
+
+# Logs de e-mail do modo de desenvolvimento
+backend/mail_log/*.html
