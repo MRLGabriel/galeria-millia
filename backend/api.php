@@ -325,8 +325,12 @@ switch ($action) {
       $code = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
       $pdo->prepare('UPDATE users SET two_factor_code_hash = ?, two_factor_expires = ? WHERE id = ?')
         ->execute([hash('sha256', $code), date('Y-m-d H:i:s', time() + 600), $u['id']]);
-      send_two_factor_email($u['email'], $u['name'], $code);
       unset($_SESSION['user_id']);
+      // Se o e-mail não sai (SMTP fora do ar), NÃO prende o usuário na tela do
+      // código — devolve erro claro em vez de um beco sem saída.
+      if (!send_two_factor_email($u['email'], $u['name'], $code)) {
+        json_error('Não conseguimos enviar o código de verificação para o seu e-mail agora. Tente novamente em instantes.', 502);
+      }
       $_SESSION['pending_2fa_user_id'] = $u['id'];
       json_out(['needsTwoFactor' => true]);
     }
@@ -362,7 +366,9 @@ switch ($action) {
     $code = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     $pdo->prepare('UPDATE users SET two_factor_code_hash = ?, two_factor_expires = ? WHERE id = ?')
       ->execute([hash('sha256', $code), date('Y-m-d H:i:s', time() + 600), $u['id']]);
-    send_two_factor_email($u['email'], $u['name'], $code);
+    if (!send_two_factor_email($u['email'], $u['name'], $code)) {
+      json_error('Não conseguimos enviar o código agora. Tente novamente em instantes.', 502);
+    }
     json_out(['ok' => true]);
   }
 
