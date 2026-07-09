@@ -1206,6 +1206,67 @@ switch ($action) {
     json_out(['status' => $status === 'approved' ? 'approved' : (in_array($status, ['rejected', 'cancelled'], true) ? 'rejected' : 'pending'), 'orderId' => $orderId]);
   }
 
+  case 'resume_payment': {
+    // Retoma o pagamento de um pedido que ficou "aguardando pagamento":
+    // recria a preferência do Checkout Pro pro MESMO pedido (external_reference
+    // = orderId) e devolve o link. Não cria pedido novo.
+    $me = require_login();
+    $b = body();
+    $orderId = (int)($b['orderId'] ?? 0);
+    $chk = $pdo->prepare('SELECT buyer_id, status, shipping_cents FROM orders WHERE id = ?');
+    $chk->execute([$orderId]);
+    $order = $chk->fetch();
+    if (!$order || (int)$order['buyer_id'] !== (int)$me['id']) json_error('Pedido não encontrado', 404);
+    if ($order['status'] !== 'pending_payment') json_error('Este pedido não está aguardando pagamento.', 409);
+
+    $its = $pdo->prepare('SELECT oi.price_cents, a.title, a.sold FROM order_items oi JOIN artworks a ON a.id = oi.artwork_id WHERE oi.order_id = ?');
+    $its->execute([$orderId]);
+    $rows = $its->fetchAll();
+    if (!$rows) json_error('Pedido sem itens.', 409);
+    $mpItems = [];
+    foreach ($rows as $i => $r) {
+      if ((int)$r['sold'] === 1) json_error('Uma das obras deste pedido já foi vendida.', 409);
+      $mpItems[] = ['id' => (string)($i + 1), 'title' => $r['title'], 'quantity' => 1, 'unit_price' => round($r['price_cents'] / 100, 2), 'currency_id' => 'BRL'];
+    }
+    $shippingCents = (int)$order['shipping_cents'];
+    if ($shippingCents > 0) $mpItems[] = ['id' => 'frete', 'title' => 'Frete', 'quantity' => 1, 'unit_price' => round($shippingCents / 100, 2), 'currency_id' => 'BRL'];
+
+    try {
+      $preference = [
+        'items' => $mpItems,
+        'external_reference' => (string)$orderId,
+        'statement_descriptor' => 'GALERIAMILLIA',
+        'payer' => ['name' => $me['name'], 'email' => $me['email']],
+        'back_urls' => [
+          'success' => SITE_BASE_URL . '/index.html',
+          'pending' => SITE_BASE_URL . '/index.html',
+          'failure' => SITE_BASE_URL . '/index.html',
+        ],
+        'notification_url' => SITE_BASE_URL . '/backend/api.php?action=mp_webhook',
+      ];
+      if (strpos(SITE_BASE_URL, 'localhost') === false) $preference['auto_return'] = 'approved';
+      $pref = mp_api('POST', '/checkout/preferences', $preference);
+    } catch (Throwable $e) {
+      error_log('[mercado-pago] falha ao retomar pagamento do pedido ' . $orderId . ': ' . $e->getMessage());
+      json_error('Não foi possível iniciar o pagamento. Tente novamente em instantes.', 502);
+    }
+    json_out(['ok' => true, 'orderId' => $orderId, 'initPoint' => $pref['init_point'] ?? '']);
+  }
+
+  case 'cancel_order': {
+    // Comprador cancela um pedido próprio que ainda não foi pago.
+    $me = require_login();
+    $b = body();
+    $orderId = (int)($b['orderId'] ?? 0);
+    $chk = $pdo->prepare('SELECT buyer_id, status FROM orders WHERE id = ?');
+    $chk->execute([$orderId]);
+    $order = $chk->fetch();
+    if (!$order || (int)$order['buyer_id'] !== (int)$me['id']) json_error('Pedido não encontrado', 404);
+    if ($order['status'] !== 'pending_payment') json_error('Só dá pra cancelar um pedido que ainda está aguardando pagamento.', 409);
+    $pdo->prepare('UPDATE orders SET status = "cancelled" WHERE id = ?')->execute([$orderId]);
+    json_out(['ok' => true]);
+  }
+
   case 'mp_webhook': {
     // Notificação server-to-server do Mercado Pago (produção). Sempre responde
     // 200 pra não gerar re-tentativas infinitas; erros vão pro error_log.
