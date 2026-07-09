@@ -1267,6 +1267,38 @@ switch ($action) {
     json_out(['ok' => true]);
   }
 
+  case 'reconcile_order': {
+    // Rede de segurança pra quando o webhook não chega: pergunta ativamente ao
+    // Mercado Pago os pagamentos deste pedido e, se houver um aprovado, fecha o
+    // pedido. Idempotente. Pode ser chamada pelo dono do pedido ou pelo admin.
+    $me = require_login();
+    $b = body();
+    $orderId = (int)($b['orderId'] ?? 0);
+    $chk = $pdo->prepare('SELECT buyer_id, status FROM orders WHERE id = ?');
+    $chk->execute([$orderId]);
+    $order = $chk->fetch();
+    if (!$order) json_error('Pedido não encontrado', 404);
+    if ($me['role'] !== 'admin' && (int)$order['buyer_id'] !== (int)$me['id']) json_error('Sem permissão', 403);
+    if ($order['status'] !== 'pending_payment') json_out(['status' => $order['status'], 'changed' => false]);
+
+    try {
+      $search = mp_api('GET', '/v1/payments/search?external_reference=' . $orderId . '&sort=date_created&criteria=desc');
+      $approved = null;
+      foreach (($search['results'] ?? []) as $p) {
+        if (($p['status'] ?? '') === 'approved') { $approved = $p; break; }
+      }
+      if ($approved) mp_apply_payment($pdo, $approved);
+    } catch (Throwable $e) {
+      error_log('[mercado-pago] reconciliar pedido ' . $orderId . ': ' . $e->getMessage());
+      json_error('Não foi possível consultar o Mercado Pago agora.', 502);
+    }
+    // relê o status atualizado
+    $s2 = $pdo->prepare('SELECT status FROM orders WHERE id = ?');
+    $s2->execute([$orderId]);
+    $newStatus = $s2->fetchColumn();
+    json_out(['status' => $newStatus, 'changed' => $newStatus !== 'pending_payment']);
+  }
+
   case 'mp_webhook': {
     // Notificação server-to-server do Mercado Pago (produção). Sempre responde
     // 200 pra não gerar re-tentativas infinitas; erros vão pro error_log.
