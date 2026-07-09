@@ -65,4 +65,4 @@ Passo a passo de produção (HostGator/cPanel: banco, e-mail SMTP, uploads, Merc
 
 ## Licença
 
-Projeto proprietário da Galeria Millia. Todos os direitos reservados.
+**Proprietária — todos os direitos reservados.** O código é público apenas para visualização e referência; **nenhum direito de uso é concedido** (comercial ou não-comercial) sem autorização expressa e por escrito do titular. Veja [`LICENSE`](LICENSE).
