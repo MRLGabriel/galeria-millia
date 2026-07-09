@@ -24,6 +24,9 @@ define('MELHOR_ENVIO_TOKEN', 'SEU_TOKEN_MELHOR_ENVIO');
 // Teste: TEST-... | Produção: APP_USR-...
 define('MP_PUBLIC_KEY', 'SUA_PUBLIC_KEY');
 define('MP_ACCESS_TOKEN', 'SEU_ACCESS_TOKEN');
+// Segredo da assinatura do webhook (MP → sua aplicação → Webhooks → "Segredo").
+// Deixe vazio pra não validar (o webhook ainda re-consulta o pagamento no MP).
+define('MP_WEBHOOK_SECRET', '');
 
 // ---- E-mail ----
 define('MAIL_MODE', 'log'); // 'log' (dev: grava em backend/mail_log/) ou 'smtp'

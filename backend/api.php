@@ -56,16 +56,24 @@ function mp_apply_payment(PDO $pdo, array $payment): void {
   $orderId = (int)($payment['external_reference'] ?? 0);
   if (!$orderId) return;
 
-  $stmt = $pdo->prepare('SELECT id, status FROM orders WHERE id = ?');
+  $stmt = $pdo->prepare('SELECT id, status, total_cents FROM orders WHERE id = ?');
   $stmt->execute([$orderId]);
   $order = $stmt->fetch();
   if (!$order || $order['status'] !== 'pending_payment') return;
+
+  $paidTotalCents = (int)round(((float)($payment['transaction_amount'] ?? 0)) * 100);
+  // Defesa em profundidade: só fecha o pedido se o valor aprovado cobre o total.
+  // O valor é fixado pela preferência no servidor, mas confirmar aqui evita
+  // fechar um pedido com um pagamento de valor menor por qualquer motivo.
+  if ($paidTotalCents < (int)$order['total_cents']) {
+    error_log('[mercado-pago] pagamento ' . ($payment['id'] ?? '?') . ' (R$ ' . number_format($paidTotalCents / 100, 2) . ') nao cobre o total do pedido ' . $orderId . ' (R$ ' . number_format((int)$order['total_cents'] / 100, 2) . ') — nao aplicado');
+    return;
+  }
 
   $feeTotalCents = 0;
   foreach (($payment['fee_details'] ?? []) as $fee) {
     $feeTotalCents += (int)round(((float)($fee['amount'] ?? 0)) * 100);
   }
-  $paidTotalCents = (int)round(((float)($payment['transaction_amount'] ?? 0)) * 100);
 
   $typeMap = ['credit_card' => 'credit_card', 'debit_card' => 'credit_card', 'bank_transfer' => 'pix', 'ticket' => 'boleto'];
   $method = $typeMap[$payment['payment_type_id'] ?? ''] ?? null;
@@ -90,6 +98,30 @@ function mp_apply_payment(PDO $pdo, array $payment): void {
     error_log('[mercado-pago] falha ao aplicar pagamento ' . ($payment['id'] ?? '?') . ' no pedido ' . $orderId . ': ' . $e->getMessage());
     throw $e;
   }
+}
+
+// Valida a assinatura (x-signature) da notificação do Mercado Pago, provando
+// que ela veio mesmo do MP. Se MP_WEBHOOK_SECRET não estiver configurado,
+// não bloqueia (o handler ainda re-consulta o pagamento no MP com o token).
+function mp_webhook_signature_ok(string $dataId): bool {
+  if (!defined('MP_WEBHOOK_SECRET') || MP_WEBHOOK_SECRET === '') return true;
+  $sig = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
+  $reqId = $_SERVER['HTTP_X_REQUEST_ID'] ?? '';
+  if ($sig === '') return false;
+  $ts = '';
+  $v1 = '';
+  foreach (explode(',', $sig) as $part) {
+    $kv = explode('=', trim($part), 2);
+    if (count($kv) === 2) {
+      if ($kv[0] === 'ts') $ts = $kv[1];
+      elseif ($kv[0] === 'v1') $v1 = $kv[1];
+    }
+  }
+  if ($ts === '' || $v1 === '') return false;
+  // Modelo exigido pelo MP: id:<data.id>;request-id:<x-request-id>;ts:<ts>;
+  $manifest = 'id:' . strtolower($dataId) . ';request-id:' . $reqId . ';ts:' . $ts . ';';
+  $calc = hash_hmac('sha256', $manifest, MP_WEBHOOK_SECRET);
+  return hash_equals($calc, $v1);
 }
 
 function melhor_envio_calculate(string $fromCep, string $toCep, array $products): array {
@@ -1309,6 +1341,12 @@ switch ($action) {
     }
     $type = $_GET['type'] ?? ($_GET['topic'] ?? '');
     if ($paymentId !== '' && ($type === '' || $type === 'payment')) {
+      if (!mp_webhook_signature_ok((string)$paymentId)) {
+        // Assinatura ausente/inválida: responde 200 (pra não gerar re-tentativas)
+        // mas NÃO processa. A reconciliação manual/automática continua disponível.
+        error_log('[mercado-pago] webhook com assinatura invalida — ignorado (payment ' . $paymentId . ')');
+        json_out(['ok' => true]);
+      }
       try {
         $payment = mp_api('GET', '/v1/payments/' . preg_replace('/\D/', '', (string)$paymentId));
         mp_apply_payment($pdo, $payment);
