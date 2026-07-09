@@ -1,6 +1,24 @@
-# Configuração de produção com segredos reais (banco, tokens, senha de e-mail).
-# Nunca versionar — fica só local e é enviada manualmente pro servidor.
+# ==== Segredos — NUNCA versionar (ficam só local) ====
+backend/config.php
 backend/config.producao.php
 
-# Logs de e-mail do modo de desenvolvimento
-backend/mail_log/*.html
+# SQL de produção (contém hash do admin e dados de deploy)
+migracao_producao.sql
+producao_instalacao.sql
+
+# Logs de e-mail do modo desenvolvimento
+backend/mail_log/
+
+# Config local do Claude Code
+.claude/settings.local.json
+
+# ==== Peso / não faz parte do código ====
+# Código-fonte do SQLite (build local)
+sqlite-src-3530300/
+
+# Imagens enviadas pelos usuários (dados de runtime; o app recria as pastas)
+uploads/
+
+# Backups locais e export de design
+*ORIGINAL_BACKUP.html
+figma-export/
