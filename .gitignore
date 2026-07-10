@@ -11,6 +11,8 @@ backend/mail_log/
 
 # Config local do Claude Code
 .claude/settings.local.json
+# Skills pessoais de fluxo (ficam só local)
+.claude/skills/
 
 # ==== Peso / não faz parte do código ====
 # Código-fonte do SQLite (build local)
