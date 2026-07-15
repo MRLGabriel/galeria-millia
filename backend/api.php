@@ -1050,6 +1050,20 @@ switch ($action) {
     json_out(['ok' => true]);
   }
 
+  case 'admin_verify_email': {
+    // Verificação manual de e-mail pelo admin — destrava a conta quando o
+    // e-mail de confirmação não chega (spam, provedor barrando etc.), sem
+    // depender do link. Limpa o token pendente.
+    require_role('admin');
+    $b = body();
+    $userId = (int)($b['userId'] ?? 0);
+    $chk = $pdo->prepare('SELECT id FROM users WHERE id = ?');
+    $chk->execute([$userId]);
+    if (!$chk->fetch()) json_error('Usuário não encontrado', 404);
+    $pdo->prepare('UPDATE users SET email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?')->execute([$userId]);
+    json_out(['ok' => true]);
+  }
+
   // ================= FRETE =================
 
   case 'calculate_shipping': {
