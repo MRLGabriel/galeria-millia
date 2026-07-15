@@ -1442,7 +1442,8 @@ switch ($action) {
 
     $itemsStmt = $pdo->prepare('
       SELECT oi.artwork_id AS artworkId, oi.price_cents AS priceCents, a.title,
-             u.name AS artistName
+             u.name AS artistName,
+             (SELECT url FROM artwork_images WHERE artwork_id = a.id ORDER BY position LIMIT 1) AS imageUrl
       FROM order_items oi
       JOIN artworks a ON a.id = oi.artwork_id
       JOIN users u ON u.id = a.artist_id
