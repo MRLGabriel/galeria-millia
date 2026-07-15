@@ -1,0 +1,41 @@
+# ============================================================
+# Galeria Millia — hardening de servidor (Apache / HostGator)
+# ============================================================
+
+# ---- Força HTTPS (TLS obrigatório) ----
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTPS} !=on [OR]
+  RewriteCond %{HTTP:X-Forwarded-Proto} =http
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</IfModule>
+
+# ---- Cabeçalhos de segurança ----
+<IfModule mod_headers.c>
+  # Só ativa HSTS sob HTTPS (evita travar acesso caso o TLS caia temporariamente).
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" "expr=%{HTTPS} == 'on'"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  # Remove pistas de versão do servidor.
+  Header always unset X-Powered-By
+  Header unset X-Powered-By
+</IfModule>
+
+# ---- Sem listagem de diretórios ----
+Options -Indexes
+
+# ---- Bloqueia arquivos sensíveis servidos como estáticos ----
+# SQL de produção (hash do admin), backups, dumps, docs internas e artefatos de build.
+<FilesMatch "\.(sql|md|log|bak|src\.js|example\.php|producao\.php)$">
+  Require all denied
+</FilesMatch>
+<FilesMatch "(ORIGINAL_BACKUP|standalone)\.html$">
+  Require all denied
+</FilesMatch>
+# Bloqueia dotfiles (.git, .htaccess, .env, etc.)
+<FilesMatch "^\.">
+  Require all denied
+</FilesMatch>

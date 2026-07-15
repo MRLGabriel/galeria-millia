@@ -9,6 +9,12 @@ producao_instalacao.sql
 # Logs de e-mail do modo desenvolvimento
 backend/mail_log/
 
+# Estado do rate limiter (runtime; recriado sozinho)
+backend/rate_limit/
+
+# Artefatos de decompilação/design (não fazem parte do código)
+*.src.js
+
 # Config local do Claude Code
 .claude/settings.local.json
 # Skills pessoais de fluxo (ficam só local)
@@ -18,8 +24,13 @@ backend/mail_log/
 # Código-fonte do SQLite (build local)
 sqlite-src-3530300/
 
-# Imagens enviadas pelos usuários (dados de runtime; o app recria as pastas)
-uploads/
+# Imagens enviadas pelos usuários (dados de runtime; o app recria as pastas).
+# Ignora o conteúdo, MAS versiona o .htaccess de proteção da pasta.
+uploads/*
+!uploads/.htaccess
+
+# Exports de design (logo/loader) — artefatos pesados, ficam só local
+*standalone.html
 
 # Backups locais e export de design
 *ORIGINAL_BACKUP.html

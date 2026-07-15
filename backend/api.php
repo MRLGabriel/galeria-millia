@@ -5,9 +5,17 @@
 
 require __DIR__ . '/config.php';
 require __DIR__ . '/mailer.php';
+require __DIR__ . '/security.php';
 
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
+
+// Defesa CSRF central: toda requisição que muda estado (POST) precisa vir do
+// próprio site. Exceção: o webhook do Mercado Pago, que é server-to-server (sem
+// Origin do nosso domínio) e é validado por assinatura HMAC dentro do handler.
+if ($method === 'POST' && $action !== 'mp_webhook') {
+  verify_origin();
+}
 
 // ---------- helpers de domínio ----------
 
@@ -343,6 +351,8 @@ switch ($action) {
   // ================= AUTENTICAÇÃO =================
 
   case 'login': {
+    // Anti-brute-force: no máx. 10 tentativas por IP a cada 5 minutos.
+    rate_limit_or_die('login', 10, 300);
     $b = body();
     $email = trim($b['email'] ?? '');
     $pass = (string)($b['pass'] ?? '');
@@ -372,10 +382,22 @@ switch ($action) {
   }
 
   case 'verify_2fa': {
+    // Anti-brute-force do código de 6 dígitos: limite por IP e por sessão.
+    // Sem isso, 1 milhão de combinações ficariam abertas dentro dos 10 min.
+    rate_limit_or_die('verify_2fa', 15, 300);
     $b = body();
     $code = trim((string)($b['code'] ?? ''));
     $pendingId = $_SESSION['pending_2fa_user_id'] ?? null;
     if (!$pendingId) json_error('Sessão de login expirada. Entre novamente.', 401);
+
+    // Após 5 códigos errados nesta sessão, invalida o desafio e força re-login.
+    $_SESSION['twofa_attempts'] = ($_SESSION['twofa_attempts'] ?? 0) + 1;
+    if ($_SESSION['twofa_attempts'] > 5) {
+      unset($_SESSION['pending_2fa_user_id'], $_SESSION['twofa_attempts']);
+      $pdo->prepare('UPDATE users SET two_factor_code_hash = NULL, two_factor_expires = NULL WHERE id = ?')->execute([$pendingId]);
+      json_error('Muitas tentativas incorretas. Faça login novamente.', 429);
+    }
+
     $stmt = $pdo->prepare('SELECT id, two_factor_code_hash, two_factor_expires FROM users WHERE id = ?');
     $stmt->execute([$pendingId]);
     $u = $stmt->fetch();
@@ -383,12 +405,13 @@ switch ($action) {
       json_error('Código inválido ou expirado');
     }
     $pdo->prepare('UPDATE users SET two_factor_code_hash = NULL, two_factor_expires = NULL WHERE id = ?')->execute([$u['id']]);
-    unset($_SESSION['pending_2fa_user_id']);
+    unset($_SESSION['pending_2fa_user_id'], $_SESSION['twofa_attempts']);
     $_SESSION['user_id'] = $u['id'];
     json_out(['user' => current_user()]);
   }
 
   case 'resend_2fa': {
+    rate_limit_or_die('resend_2fa', 5, 600);
     $pendingId = $_SESSION['pending_2fa_user_id'] ?? null;
     if (!$pendingId) json_error('Sessão de login expirada. Entre novamente.', 401);
     $stmt = $pdo->prepare('SELECT id, name, email FROM users WHERE id = ?');
@@ -405,6 +428,7 @@ switch ($action) {
   }
 
   case 'register': {
+    rate_limit_or_die('register', 8, 600);
     $b = body();
     $name = trim($b['name'] ?? '');
     $email = trim($b['email'] ?? '');
@@ -491,6 +515,7 @@ switch ($action) {
   }
 
   case 'forgot_password': {
+    rate_limit_or_die('forgot_password', 5, 600);
     $b = body();
     $email = trim($b['email'] ?? '');
     if ($email !== '') {
@@ -683,6 +708,7 @@ switch ($action) {
 
   case 'upload_artwork_image': {
     $me = require_role('artist', 'admin');
+    rate_limit_or_die('upload', 40, 300);
     $artworkId = (int)($_POST['id'] ?? 0);
     $chk = $pdo->prepare('SELECT artist_id FROM artworks WHERE id = ?');
     $chk->execute([$artworkId]);
@@ -713,6 +739,7 @@ switch ($action) {
     // front, que a guarda nas props do bloco (persistidas via save_page) —
     // por isso dá pra trocar a imagem quantas vezes quiser.
     $me = require_role('artist', 'admin');
+    rate_limit_or_die('upload', 40, 300);
     if (empty($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) json_error('Envie um arquivo de imagem válido');
     if ($_FILES['image']['size'] > 8 * 1024 * 1024) json_error('Imagem muito grande (máximo 8MB)');
     $info = getimagesize($_FILES['image']['tmp_name']);
@@ -729,6 +756,7 @@ switch ($action) {
 
   case 'upload_avatar': {
     $me = require_login();
+    rate_limit_or_die('upload', 40, 300);
     if (empty($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) json_error('Envie um arquivo de imagem válido');
     if ($_FILES['image']['size'] > 4 * 1024 * 1024) json_error('Imagem muito grande (máximo 4MB)');
     $info = getimagesize($_FILES['image']['tmp_name']);
@@ -748,6 +776,7 @@ switch ($action) {
   case 'upload_cover': {
     // Capa (banner) da página pública do artista.
     $me = require_role('artist', 'admin');
+    rate_limit_or_die('upload', 40, 300);
     if (empty($_FILES['image']) || $_FILES['image']['error'] !== UPLOAD_ERR_OK) json_error('Envie um arquivo de imagem válido');
     if ($_FILES['image']['size'] > 8 * 1024 * 1024) json_error('Imagem muito grande (máximo 8MB)');
     $info = getimagesize($_FILES['image']['tmp_name']);
@@ -909,17 +938,41 @@ switch ($action) {
 
   case 'save_page': {
     $me = require_login();
+    rate_limit_or_die('save_page', 60, 300);
     $b = body();
     $artistId = (int)($b['artistId'] ?? 0);
+    // Só o dono da página (ou admin) pode salvar — isolamento por artista.
     if ($me['role'] !== 'admin' && (int)$me['id'] !== $artistId) json_error('Sem permissão', 403);
     $blocks = is_array($b['blocks'] ?? null) ? $b['blocks'] : [];
-    $pdo->beginTransaction();
-    $pdo->prepare('DELETE FROM artist_page_blocks WHERE artist_id = ?')->execute([$artistId]);
-    $ins = $pdo->prepare('INSERT INTO artist_page_blocks (artist_id, type, position, props) VALUES (?, ?, ?, ?)');
-    foreach ($blocks as $i => $blk) {
-      $ins->execute([$artistId, $blk['type'], $i, json_encode($blk['props'] ?? [], JSON_UNESCAPED_UNICODE)]);
+
+    // Validação de estrutura do editor (defesa em profundidade):
+    //  - tipo de bloco tem que estar na lista permitida (nada arbitrário no banco);
+    //  - número de blocos e tamanho das props limitados (evita abuso/DoS de payload).
+    $allowedTypes = ['hero', 'text', 'heading', 'gallery', 'quote', 'button', 'image', 'divider', 'spacer'];
+    if (count($blocks) > 100) json_error('A página tem blocos demais (máximo 100).', 413);
+    $clean = [];
+    foreach ($blocks as $blk) {
+      if (!is_array($blk)) json_error('Bloco inválido.');
+      $type = $blk['type'] ?? '';
+      if (!in_array($type, $allowedTypes, true)) json_error('Tipo de bloco não permitido: ' . $type);
+      $propsJson = json_encode(is_array($blk['props'] ?? null) ? $blk['props'] : [], JSON_UNESCAPED_UNICODE);
+      if ($propsJson === false) json_error('Propriedades do bloco inválidas.');
+      if (strlen($propsJson) > 40000) json_error('Um dos blocos é grande demais.', 413);
+      $clean[] = ['type' => $type, 'props' => $propsJson];
     }
-    $pdo->commit();
+
+    $pdo->beginTransaction();
+    try {
+      $pdo->prepare('DELETE FROM artist_page_blocks WHERE artist_id = ?')->execute([$artistId]);
+      $ins = $pdo->prepare('INSERT INTO artist_page_blocks (artist_id, type, position, props) VALUES (?, ?, ?, ?)');
+      foreach ($clean as $i => $blk) {
+        $ins->execute([$artistId, $blk['type'], $i, $blk['props']]);
+      }
+      $pdo->commit();
+    } catch (Throwable $e) {
+      $pdo->rollBack();
+      throw $e;
+    }
     json_out(['ok' => true]);
   }
 

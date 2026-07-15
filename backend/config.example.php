@@ -72,7 +72,11 @@ function db(): PDO {
   return $pdo;
 }
 
-session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'samesite' => 'Lax']);
+// Cookie de sessão endurecido: HttpOnly, Secure em HTTPS e SameSite=Lax.
+$__https = (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off')
+  || (($_SERVER['SERVER_PORT'] ?? null) == 443)
+  || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'secure' => $__https, 'httponly' => true, 'samesite' => 'Lax']);
 session_start();
 
 header('Content-Type: application/json; charset=utf-8');
