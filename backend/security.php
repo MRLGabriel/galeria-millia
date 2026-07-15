@@ -23,17 +23,20 @@ function client_ip(): string {
 // que a requisição partiu do próprio site. Chamado apenas em ações que mudam
 // estado; o webhook do Mercado Pago é isento (validado por assinatura HMAC).
 function verify_origin(): void {
-  $siteHost = parse_url(SITE_BASE_URL, PHP_URL_HOST);
+  // Normaliza tirando "www." — apex e www são o mesmo site (senão o guard
+  // bloquearia quem acessa por www.galeriamillia.com, quebrando todo POST).
+  $norm = static fn($h) => preg_replace('/^www\./', '', strtolower((string)$h));
+  $expected = $norm(parse_url(SITE_BASE_URL, PHP_URL_HOST));
   $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
   if ($origin !== '') {
-    if (strcasecmp((string)parse_url($origin, PHP_URL_HOST), (string)$siteHost) !== 0) {
+    if ($norm(parse_url($origin, PHP_URL_HOST)) !== $expected) {
       json_error('Origem não autorizada.', 403);
     }
     return;
   }
   $referer = $_SERVER['HTTP_REFERER'] ?? '';
   if ($referer !== '') {
-    if (strcasecmp((string)parse_url($referer, PHP_URL_HOST), (string)$siteHost) !== 0) {
+    if ($norm(parse_url($referer, PHP_URL_HOST)) !== $expected) {
       json_error('Origem não autorizada.', 403);
     }
     return;
