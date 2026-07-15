@@ -250,7 +250,7 @@ switch ($action) {
 
     $obraSql = '
       SELECT o.id, o.artist_id AS artistId, o.title, c.name AS cat, o.price_cents AS priceCents,
-             o.description AS `desc`, o.width_cm AS w, o.height_cm AS h,
+             o.description AS `desc`, o.technique, o.width_cm AS w, o.height_cm AS h,
              o.edition_size AS editionSize, o.edition_sold AS editionSold,
              o.package_weight_kg AS packageWeightKg, o.package_length_cm AS packageLengthCm,
              o.package_width_cm AS packageWidthCm, o.package_height_cm AS packageHeightCm,
@@ -670,6 +670,8 @@ switch ($action) {
     if ($price <= 0) json_error('Informe um preço válido, maior que zero');
     $colId = collection_id_for($pdo, (int)$me['id'], $b['collection'] ?? '');
     $desc = $b['desc'] ?? '';
+    $technique = trim((string)($b['technique'] ?? ''));
+    if (mb_strlen($technique) > 120) $technique = mb_substr($technique, 0, 120);
     $editionSize = isset($b['editionSize']) && $b['editionSize'] !== '' && $b['editionSize'] !== null ? (int)$b['editionSize'] : null;
     if ($editionSize !== null && $editionSize < 1) json_error('O tamanho da edição deve ser pelo menos 1');
 
@@ -690,16 +692,16 @@ switch ($action) {
       if ($editionSize !== null && $editionSize < (int)$row['edition_sold']) {
         json_error('Já foram vendidas ' . $row['edition_sold'] . ' cópias — o tamanho da edição não pode ser menor que isso');
       }
-      $upd = $pdo->prepare('UPDATE artworks SET title=?, category_id=?, price_cents=?, collection_id=?, description=?, edition_size=?,
+      $upd = $pdo->prepare('UPDATE artworks SET title=?, category_id=?, price_cents=?, collection_id=?, technique=?, description=?, edition_size=?,
                              package_weight_kg=?, package_length_cm=?, package_width_cm=?, package_height_cm=? WHERE id=?');
-      $upd->execute([$title, $catId, $price, $colId, $desc, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight, $b['id']]);
+      $upd->execute([$title, $catId, $price, $colId, $technique, $desc, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight, $b['id']]);
       json_out(['ok' => true, 'id' => (int)$b['id']]);
     } else {
       require_verified_email($me);
-      $ins = $pdo->prepare('INSERT INTO artworks (artist_id, category_id, collection_id, title, description, price_cents, width_cm, height_cm, edition_size,
+      $ins = $pdo->prepare('INSERT INTO artworks (artist_id, category_id, collection_id, title, technique, description, price_cents, width_cm, height_cm, edition_size,
                              package_weight_kg, package_length_cm, package_width_cm, package_height_cm, approved, sold)
-                             VALUES (?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');
-      $ins->execute([$me['id'], $catId, $colId, $title, $desc, $price, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight]);
+                             VALUES (?, ?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');
+      $ins->execute([$me['id'], $catId, $colId, $title, $technique, $desc, $price, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight]);
       // Confirma pro artista que a obra entrou na fila de curadoria.
       send_obra_submitted_email($me['email'], $me['name'], $title);
       json_out(['ok' => true, 'id' => (int)$pdo->lastInsertId()]);

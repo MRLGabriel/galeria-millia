@@ -77,6 +77,7 @@ CREATE TABLE artworks (
   category_id   INT UNSIGNED,
   collection_id INT UNSIGNED,
   title         VARCHAR(200) NOT NULL,
+  technique     VARCHAR(120),                -- ex.: "Óleo sobre tela" (separado da descrição)
   description   TEXT,
   price_cents   INT UNSIGNED NOT NULL,       -- UNSIGNED já impede preço negativo
   width_cm      DECIMAL(6,2),

@@ -69,6 +69,7 @@ CREATE TABLE artworks (
   category_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
   collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL,
   title         TEXT NOT NULL,
+  technique     TEXT,
   description   TEXT,
   price_cents   INTEGER NOT NULL CHECK (price_cents >= 0),
   width_cm      REAL,
