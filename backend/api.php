@@ -702,9 +702,22 @@ switch ($action) {
                              package_weight_kg, package_length_cm, package_width_cm, package_height_cm, approved, sold)
                              VALUES (?, ?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');
       $ins->execute([$me['id'], $catId, $colId, $title, $technique, $desc, $price, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight]);
+      // Captura o id AGORA: qualquer outra consulta nesta conexão zera o
+      // lastInsertId(), e o front usa este id pra enviar a foto em seguida.
+      $newId = (int)$pdo->lastInsertId();
       // Confirma pro artista que a obra entrou na fila de curadoria.
       send_obra_submitted_email($me['email'], $me['name'], $title);
-      json_out(['ok' => true, 'id' => (int)$pdo->lastInsertId()]);
+      // Avisa os admins que tem obra nova pra analisar. Best-effort: uma falha
+      // de e-mail aqui não pode derrubar o cadastro da obra, que já foi gravado.
+      try {
+        $admins = $pdo->query("SELECT name, email FROM users WHERE role = 'admin' AND blocked = 0 AND deactivated = 0")->fetchAll();
+        foreach ($admins as $adm) {
+          send_obra_pending_admin_email($adm['email'], $adm['name'], $me['name'], $title);
+        }
+      } catch (Throwable $e) {
+        error_log('[curadoria] falha ao avisar admin sobre obra nova: ' . $e->getMessage());
+      }
+      json_out(['ok' => true, 'id' => $newId]);
     }
   }
 

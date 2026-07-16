@@ -86,6 +86,19 @@ function send_two_factor_email(string $toEmail, string $toName, string $code): b
   return send_mail($toEmail, $toName, 'Seu código de acesso — Galeria Millia', $html);
 }
 
+// Avisa o administrador que entrou obra nova na fila de curadoria.
+// (O artista recebe o send_obra_submitted_email; este é o aviso do outro lado.)
+function send_obra_pending_admin_email(string $toEmail, string $toName, string $artistName, string $obraTitle): bool {
+  $link = SITE_BASE_URL;
+  $html = mail_layout('Obra nova na curadoria', '
+    <p>Olá, ' . htmlspecialchars($toName) . '!</p>
+    <p><b>' . htmlspecialchars($artistName) . '</b> enviou a obra <b>' . htmlspecialchars($obraTitle) . '</b> e ela está aguardando sua análise.</p>
+    <p style="margin:24px 0"><a href="' . $link . '" style="background:#221E19;color:#F6F4EF;text-decoration:none;padding:12px 22px;border-radius:3px;display:inline-block">Abrir a galeria</a></p>
+    <p style="font-size:12px;color:#8C8679">No site, vá em <b>Administração → Curadoria</b> para aprovar ou recusar. A obra só fica visível ao público depois de aprovada.</p>
+  ');
+  return send_mail($toEmail, $toName, 'Obra nova na curadoria: ' . $obraTitle . ' — Galeria Millia', $html);
+}
+
 function send_obra_approved_email(string $toEmail, string $toName, string $obraTitle): bool {
   $link = SITE_BASE_URL;
   $html = mail_layout('Sua obra foi aprovada', '
