@@ -186,6 +186,52 @@ function ensure_default_blocks(PDO $pdo, array $artist): void {
   }
 }
 
+// ---------- slug do artista (URLs /artista/nome) ----------
+
+// "Lys Rosa" -> "lys-rosa". Sem depender de locale/iconv, que varia por servidor.
+function slugify(string $s): string {
+  $map = [
+    'á'=>'a','à'=>'a','ã'=>'a','â'=>'a','ä'=>'a','å'=>'a',
+    'é'=>'e','è'=>'e','ê'=>'e','ë'=>'e',
+    'í'=>'i','ì'=>'i','î'=>'i','ï'=>'i',
+    'ó'=>'o','ò'=>'o','õ'=>'o','ô'=>'o','ö'=>'o',
+    'ú'=>'u','ù'=>'u','û'=>'u','ü'=>'u',
+    'ç'=>'c','ñ'=>'n','ý'=>'y',
+  ];
+  $s = mb_strtolower($s, 'UTF-8');
+  $s = strtr($s, $map);
+  $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+  $s = trim((string)$s, '-');
+  if ($s === '') $s = 'artista';
+  return substr($s, 0, 150);
+}
+
+// Garante unicidade: se "lys-rosa" já existe, vira "lys-rosa-2", etc.
+function unique_slug(PDO $pdo, string $name, ?int $excludeId = null): string {
+  $base = slugify($name);
+  $slug = $base;
+  $i = 2;
+  $q = $pdo->prepare('SELECT id FROM users WHERE slug = ? AND id <> ?');
+  while (true) {
+    $q->execute([$slug, $excludeId ?? 0]);
+    if (!$q->fetch()) return $slug;
+    $slug = $base . '-' . $i++;
+    if ($i > 200) return $base . '-' . ($excludeId ?? random_int(1000, 9999)); // trava de segurança
+  }
+}
+
+// Backfill preguiçoso: artista sem slug ganha um na primeira leitura.
+function ensure_artist_slug(PDO $pdo, int $id, string $name): ?string {
+  $slug = unique_slug($pdo, $name, $id);
+  try {
+    $pdo->prepare('UPDATE users SET slug = ? WHERE id = ? AND slug IS NULL')->execute([$slug, $id]);
+  } catch (PDOException $e) {
+    error_log('[slug] falha ao gerar slug de ' . $id . ': ' . $e->getMessage());
+    return null;
+  }
+  return $slug;
+}
+
 function edition_label($editionSize, $editionSold): string {
   if ($editionSize === null) return 'Obra única';
   $size = (int)$editionSize;
@@ -229,7 +275,7 @@ switch ($action) {
     $pendingCategorias = $pdo->query('SELECT name FROM categories WHERE approved = 0 ORDER BY name')->fetchAll(PDO::FETCH_COLUMN);
 
     $users = $pdo->query('
-      SELECT u.id, u.role, u.name, u.headline, u.bio, u.avatar_color AS avatarColor, u.avatar_url AS avatarUrl, u.cover_url AS coverUrl, u.blocked, u.email,
+      SELECT u.id, u.role, u.name, u.slug, u.headline, u.bio, u.avatar_color AS avatarColor, u.avatar_url AS avatarUrl, u.cover_url AS coverUrl, u.blocked, u.email,
              u.email_verified AS emailVerified, u.two_factor_enabled AS twoFactorEnabled, u.deactivated,
              (SELECT COUNT(*) FROM follows f WHERE f.artist_id = u.id) AS followers
       FROM users u ORDER BY u.name
@@ -244,6 +290,8 @@ switch ($action) {
       if ($u['role'] === 'artist') {
         $artistRow = ['id' => $u['id'], 'name' => $u['name'], 'headline' => $u['headline'], 'bio' => $u['bio']];
         ensure_default_blocks($pdo, $artistRow);
+        // Artista antigo (ou recém-promovido) ainda sem slug: gera agora.
+        if (empty($u['slug'])) $u['slug'] = ensure_artist_slug($pdo, (int)$u['id'], $u['name']);
       }
     }
     unset($u);
@@ -450,6 +498,8 @@ switch ($action) {
 
     if ($role === 'artist') {
       ensure_default_blocks($pdo, ['id' => $newId, 'name' => $name, 'headline' => $headline, 'bio' => $bio]);
+      // Slug da landing page do artista (/artista/nome).
+      $pdo->prepare('UPDATE users SET slug = ? WHERE id = ?')->execute([unique_slug($pdo, $name, $newId), $newId]);
     }
     send_verification_email($email, $name, $token);
     $_SESSION['user_id'] = $newId;
@@ -944,11 +994,19 @@ switch ($action) {
     $userId = (int)($b['userId'] ?? 0);
     $name = trim($b['name'] ?? '');
     if ($name === '') json_error('Nome não pode ser vazio');
-    $chk = $pdo->prepare('SELECT id FROM users WHERE id = ?');
+    $chk = $pdo->prepare('SELECT id, role FROM users WHERE id = ?');
     $chk->execute([$userId]);
-    if (!$chk->fetch()) json_error('Usuário não encontrado', 404);
+    $target = $chk->fetch();
+    if (!$target) json_error('Usuário não encontrado', 404);
     $pdo->prepare('UPDATE users SET name = ? WHERE id = ?')->execute([$name, $userId]);
-    json_out(['ok' => true]);
+    // O slug acompanha o nome — ATENÇÃO: isso muda a URL pública do artista
+    // (/artista/nome), então links e anúncios antigos deixam de valer.
+    $newSlug = null;
+    if ($target['role'] === 'artist') {
+      $newSlug = unique_slug($pdo, $name, $userId);
+      $pdo->prepare('UPDATE users SET slug = ? WHERE id = ?')->execute([$newSlug, $userId]);
+    }
+    json_out(['ok' => true, 'slug' => $newSlug]);
   }
 
   case 'save_page': {
@@ -1041,9 +1099,12 @@ switch ($action) {
     if (!in_array($role, ['admin', 'artist', 'visitor'], true)) json_error('Papel inválido');
     $pdo->prepare('UPDATE users SET role = ? WHERE id = ?')->execute([$role, $userId]);
     if ($role === 'artist') {
-      $stmt = $pdo->prepare('SELECT id, name, headline, bio FROM users WHERE id = ?');
+      $stmt = $pdo->prepare('SELECT id, name, headline, bio, slug FROM users WHERE id = ?');
       $stmt->execute([$userId]);
-      ensure_default_blocks($pdo, $stmt->fetch());
+      $row = $stmt->fetch();
+      ensure_default_blocks($pdo, $row);
+      // Virou artista: passa a ter landing page, então precisa de slug.
+      if ($row && empty($row['slug'])) ensure_artist_slug($pdo, (int)$row['id'], $row['name']);
     }
     json_out(['ok' => true]);
   }
