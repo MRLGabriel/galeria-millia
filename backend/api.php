@@ -232,6 +232,23 @@ function ensure_artist_slug(PDO $pdo, int $id, string $name): ?string {
   return $slug;
 }
 
+// Normaliza um link de rede social do artista. Devolve null se vazio/inválido.
+// SEGURANÇA: só http(s). Sem isso, um "javascript:..." salvo aqui viraria XIS
+// (XSS) na página pública do artista quando alguém clicasse no ícone.
+function clean_social_url($raw): ?string {
+  $u = trim((string)$raw);
+  if ($u === '') return null;
+  // Aceita o jeito que as pessoas digitam: "instagram.com/fulano".
+  if (!preg_match('#^[a-z][a-z0-9+.-]*://#i', $u)) $u = 'https://' . $u;
+  if (mb_strlen($u) > 255) return null;
+  $p = parse_url($u);
+  if (!$p || empty($p['host'])) return null;
+  $scheme = strtolower($p['scheme'] ?? '');
+  if ($scheme !== 'http' && $scheme !== 'https') return null;
+  if (!preg_match('/^[a-z0-9.-]+\.[a-z]{2,}$/i', $p['host'])) return null;
+  return $u;
+}
+
 function edition_label($editionSize, $editionSold): string {
   if ($editionSize === null) return 'Obra única';
   $size = (int)$editionSize;
@@ -276,6 +293,7 @@ switch ($action) {
 
     $users = $pdo->query('
       SELECT u.id, u.role, u.name, u.slug, u.headline, u.bio, u.avatar_color AS avatarColor, u.avatar_url AS avatarUrl, u.cover_url AS coverUrl, u.blocked, u.email,
+             u.youtube_url AS youtubeUrl, u.instagram_url AS instagramUrl, u.facebook_url AS facebookUrl,
              u.email_verified AS emailVerified, u.two_factor_enabled AS twoFactorEnabled, u.deactivated,
              (SELECT COUNT(*) FROM follows f WHERE f.artist_id = u.id) AS followers
       FROM users u ORDER BY u.name
@@ -964,8 +982,18 @@ switch ($action) {
     // renomear uma conta (ação rename_user), pra evitar impersonação.
     $headline = $b['headline'] ?? $me['headline'];
     $bio = $b['bio'] ?? $me['bio'];
-    $pdo->prepare('UPDATE users SET headline=?, bio=? WHERE id=?')->execute([$headline, $bio, $me['id']]);
-    json_out(['ok' => true]);
+    // Redes sociais. Chave AUSENTE no payload = mantém o que já está salvo;
+    // chave presente e vazia = o artista apagou o link. Sem essa distinção,
+    // editar só a bio apagaria os links (o JSON não envia chaves undefined).
+    $cur = $pdo->prepare('SELECT youtube_url, instagram_url, facebook_url FROM users WHERE id = ?');
+    $cur->execute([$me['id']]);
+    $c = $cur->fetch() ?: ['youtube_url' => null, 'instagram_url' => null, 'facebook_url' => null];
+    $yt = array_key_exists('youtubeUrl', $b)   ? clean_social_url($b['youtubeUrl'])   : $c['youtube_url'];
+    $ig = array_key_exists('instagramUrl', $b) ? clean_social_url($b['instagramUrl']) : $c['instagram_url'];
+    $fb = array_key_exists('facebookUrl', $b)  ? clean_social_url($b['facebookUrl'])  : $c['facebook_url'];
+    $pdo->prepare('UPDATE users SET headline=?, bio=?, youtube_url=?, instagram_url=?, facebook_url=? WHERE id=?')
+      ->execute([$headline, $bio, $yt, $ig, $fb, $me['id']]);
+    json_out(['ok' => true, 'youtubeUrl' => $yt, 'instagramUrl' => $ig, 'facebookUrl' => $fb]);
   }
 
   case 'save_origin_address': {
