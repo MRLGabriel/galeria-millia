@@ -9,10 +9,10 @@
   RewriteCond %{HTTP:X-Forwarded-Proto} =http
   RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
 
-  # ---- Landing page do artista: /artista/nome -> artista.php (URL não muda) ----
-  # QSA preserva parâmetros do anúncio (?gclid=...). Só letras minúsculas,
-  # números e hífen — o mesmo formato que o backend gera no slug.
+  # ---- Landing pages (URL não muda; QSA preserva o ?gclid do anúncio) ----
+  # Só letras minúsculas, números e hífen — o mesmo formato dos slugs do backend.
   RewriteRule ^artista/([a-z0-9-]+)/?$ artista.php?slug=$1 [L,QSA]
+  RewriteRule ^obra/([a-z0-9-]+)/?$ obra.php?slug=$1 [L,QSA]
 </IfModule>
 
 # ---- Cabeçalhos de segurança ----

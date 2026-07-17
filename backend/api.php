@@ -206,18 +206,25 @@ function slugify(string $s): string {
   return substr($s, 0, 150);
 }
 
-// Garante unicidade: se "lys-rosa" já existe, vira "lys-rosa-2", etc.
-function unique_slug(PDO $pdo, string $name, ?int $excludeId = null): string {
+// Garante unicidade na tabela: se "lys-rosa" já existe, vira "lys-rosa-2", etc.
+// $table é whitelistado — nunca vem de entrada do usuário (não dá pra parametrizar
+// nome de tabela em prepared statement).
+function unique_slug_in(PDO $pdo, string $table, string $name, ?int $excludeId = null): string {
+  if (!in_array($table, ['users', 'artworks'], true)) throw new InvalidArgumentException('tabela inválida');
   $base = slugify($name);
   $slug = $base;
   $i = 2;
-  $q = $pdo->prepare('SELECT id FROM users WHERE slug = ? AND id <> ?');
+  $q = $pdo->prepare("SELECT id FROM $table WHERE slug = ? AND id <> ?");
   while (true) {
     $q->execute([$slug, $excludeId ?? 0]);
     if (!$q->fetch()) return $slug;
     $slug = $base . '-' . $i++;
-    if ($i > 200) return $base . '-' . ($excludeId ?? random_int(1000, 9999)); // trava de segurança
+    if ($i > 500) return $base . '-' . ($excludeId ?? random_int(1000, 9999)); // trava de segurança
   }
+}
+
+function unique_slug(PDO $pdo, string $name, ?int $excludeId = null): string {
+  return unique_slug_in($pdo, 'users', $name, $excludeId);
 }
 
 // Backfill preguiçoso: artista sem slug ganha um na primeira leitura.
@@ -315,7 +322,7 @@ switch ($action) {
     unset($u);
 
     $obraSql = '
-      SELECT o.id, o.artist_id AS artistId, o.title, c.name AS cat, o.price_cents AS priceCents,
+      SELECT o.id, o.artist_id AS artistId, o.title, o.slug, c.name AS cat, o.price_cents AS priceCents,
              o.description AS `desc`, o.technique, o.width_cm AS w, o.height_cm AS h,
              o.edition_size AS editionSize, o.edition_sold AS editionSold,
              o.package_weight_kg AS packageWeightKg, o.package_length_cm AS packageLengthCm,
@@ -336,6 +343,16 @@ switch ($action) {
     $stmt->execute($params);
     $obras = $stmt->fetchAll();
     foreach ($obras as &$o) {
+      // Obra antiga ainda sem slug (antes da migração): gera na primeira leitura.
+      if (empty($o['slug'])) {
+        $s = unique_slug_in($pdo, 'artworks', $o['title'], (int)$o['id']);
+        try {
+          $pdo->prepare('UPDATE artworks SET slug = ? WHERE id = ? AND slug IS NULL')->execute([$s, $o['id']]);
+          $o['slug'] = $s;
+        } catch (PDOException $e) {
+          error_log('[slug] falha ao gerar slug da obra ' . $o['id'] . ': ' . $e->getMessage());
+        }
+      }
       $o['price'] = $o['priceCents'] / 100;
       unset($o['priceCents']);
       $o['approved'] = (bool)$o['approved'];
@@ -760,16 +777,19 @@ switch ($action) {
       if ($editionSize !== null && $editionSize < (int)$row['edition_sold']) {
         json_error('Já foram vendidas ' . $row['edition_sold'] . ' cópias — o tamanho da edição não pode ser menor que isso');
       }
-      $upd = $pdo->prepare('UPDATE artworks SET title=?, category_id=?, price_cents=?, collection_id=?, technique=?, description=?, edition_size=?,
+      // O slug acompanha o título — ATENÇÃO: muda a URL pública da obra
+      // (/obra/nome), então links já compartilhados deixam de valer.
+      $newSlug = unique_slug_in($pdo, 'artworks', $title, (int)$b['id']);
+      $upd = $pdo->prepare('UPDATE artworks SET title=?, slug=?, category_id=?, price_cents=?, collection_id=?, technique=?, description=?, edition_size=?,
                              package_weight_kg=?, package_length_cm=?, package_width_cm=?, package_height_cm=? WHERE id=?');
-      $upd->execute([$title, $catId, $price, $colId, $technique, $desc, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight, $b['id']]);
+      $upd->execute([$title, $newSlug, $catId, $price, $colId, $technique, $desc, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight, $b['id']]);
       json_out(['ok' => true, 'id' => (int)$b['id']]);
     } else {
       require_verified_email($me);
-      $ins = $pdo->prepare('INSERT INTO artworks (artist_id, category_id, collection_id, title, technique, description, price_cents, width_cm, height_cm, edition_size,
+      $ins = $pdo->prepare('INSERT INTO artworks (artist_id, category_id, collection_id, title, slug, technique, description, price_cents, width_cm, height_cm, edition_size,
                              package_weight_kg, package_length_cm, package_width_cm, package_height_cm, approved, sold)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');
-      $ins->execute([$me['id'], $catId, $colId, $title, $technique, $desc, $price, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight]);
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');
+      $ins->execute([$me['id'], $catId, $colId, $title, unique_slug_in($pdo, 'artworks', $title), $technique, $desc, $price, $editionSize, $pkgWeight, $pkgLength, $pkgWidth, $pkgHeight]);
       // Captura o id AGORA: qualquer outra consulta nesta conexão zera o
       // lastInsertId(), e o front usa este id pra enviar a foto em seguida.
       $newId = (int)$pdo->lastInsertId();
