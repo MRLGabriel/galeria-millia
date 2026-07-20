@@ -13,6 +13,16 @@
 const PERK_INSTAGRAM_FIRST  = 5;   // publicações no Instagram da galeria sem custo
 const PERK_TWO_MONTHS_FIRST = 10;  // 2 meses de Gold sem cobrança
 
+// IDs dos planos de assinatura criados no painel do Mercado Pago (Assinaturas).
+// Quando existir, a recorrência (valor, ciclo, trial) vem do plano do MP.
+// Para criar os planos anuais: crie-os no painel do MP e cole os IDs aqui.
+const MP_PREAPPROVAL_PLANS = [
+  'gold_monthly'    => 'e8fce928b5d741e99ec17f0c0c9a27db',
+  'diamond_monthly' => '6ca9949e94254f199b442a43f0ec86ab',
+  'gold_annual'     => '',  // sem plano anual no MP ainda → criado sob demanda
+  'diamond_annual'  => '',
+];
+
 // Limites/recursos de um plano (JSON gravado em plans.features).
 function plan_features(PDO $pdo, string $code): array {
   static $cache = [];
@@ -124,22 +134,29 @@ function mp_create_subscription(PDO $pdo, array $artist, string $planCode, strin
     if ($months > 0) $freeTrial = ['frequency' => $months, 'frequency_type' => 'months'];
   }
 
-  $auto = [
-    'frequency' => $freq,
-    'frequency_type' => 'months',
-    'transaction_amount' => $amount,
-    'currency_id' => 'BRL',
-  ];
-  if ($freeTrial) $auto['free_trial'] = $freeTrial;
-
   $payload = [
     'reason' => 'Galeria Millia — ' . $plan['name'] . ($period === 'annual' ? ' (anual)' : ' (mensal)'),
     'external_reference' => 'sub-' . (int)$artist['id'] . '-' . $planCode . '-' . $period,
     'payer_email' => $artist['email'],
     'back_url' => SITE_BASE_URL . '/?assinatura=retorno',
     'status' => 'pending',
-    'auto_recurring' => $auto,
   ];
+
+  // Se existe um plano pronto no MP pra esse (plano+período), referencia ele —
+  // a recorrência (valor, ciclo, trial) vem do plano. Senão, cria inline.
+  $mpPlanId = MP_PREAPPROVAL_PLANS[$planCode . '_' . $period] ?? '';
+  if ($mpPlanId !== '') {
+    $payload['preapproval_plan_id'] = $mpPlanId;
+  } else {
+    $auto = [
+      'frequency' => $freq,
+      'frequency_type' => 'months',
+      'transaction_amount' => $amount,
+      'currency_id' => 'BRL',
+    ];
+    if ($freeTrial) $auto['free_trial'] = $freeTrial;
+    $payload['auto_recurring'] = $auto;
+  }
 
   // Cancela uma assinatura MP anterior (troca de plano) — best-effort.
   if (!empty($cur['mp_preapproval_id'])) {
