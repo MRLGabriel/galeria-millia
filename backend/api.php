@@ -6,6 +6,7 @@
 require __DIR__ . '/config.php';
 require __DIR__ . '/mailer.php';
 require __DIR__ . '/security.php';
+require __DIR__ . '/subscriptions.php';
 
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
@@ -317,6 +318,10 @@ switch ($action) {
         ensure_default_blocks($pdo, $artistRow);
         // Artista antigo (ou recém-promovido) ainda sem slug: gera agora.
         if (empty($u['slug'])) $u['slug'] = ensure_artist_slug($pdo, (int)$u['id'], $u['name']);
+        // Assinaturas (Fase 1): garante a linha de assinatura e concede os
+        // perks de lançamento aos primeiros da fila (cobre os já cadastrados).
+        ensure_subscription($pdo, (int)$u['id']);
+        grant_launch_perks($pdo, (int)$u['id']);
       }
     }
     unset($u);
@@ -415,6 +420,12 @@ switch ($action) {
       $pages[$b['artistId']][] = ['id' => (string)$b['id'], 'type' => $b['type'], 'props' => json_decode($b['props'], true)];
     }
 
+    // Assinaturas (Fase 1): catálogo de planos + assinatura do artista logado.
+    $plans = $pdo->query('SELECT code, name, price_cents AS priceCents, features FROM plans WHERE active = 1 ORDER BY sort_order')->fetchAll();
+    foreach ($plans as &$pl) { $pl['features'] = json_decode($pl['features'], true) ?: []; }
+    unset($pl);
+    $mySubscription = ($me && $me['role'] === 'artist') ? subscription_summary($pdo, (int)$me['id']) : null;
+
     json_out([
       'me' => $me,
       'categorias' => $categorias,
@@ -428,6 +439,8 @@ switch ($action) {
       'myOriginAddress' => $myOriginAddress,
       'myCards' => $myCards,
       'pages' => $pages,
+      'plans' => $plans,
+      'mySubscription' => $mySubscription,
     ]);
   }
 
