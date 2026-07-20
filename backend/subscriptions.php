@@ -19,8 +19,8 @@ const PERK_TWO_MONTHS_FIRST = 10;  // 2 meses de Gold sem cobrança
 const MP_PREAPPROVAL_PLANS = [
   'gold_monthly'    => 'e8fce928b5d741e99ec17f0c0c9a27db',
   'diamond_monthly' => '6ca9949e94254f199b442a43f0ec86ab',
-  'gold_annual'     => '',  // sem plano anual no MP ainda → criado sob demanda
-  'diamond_annual'  => '',
+  'gold_annual'     => '67a07097381548a39dcfdbb643a7b082',
+  'diamond_annual'  => '530ba4fcd51848fb8443b79a54740d40',
 ];
 
 // Limites/recursos de um plano (JSON gravado em plans.features).
