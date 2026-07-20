@@ -107,77 +107,64 @@ function effective_plan_code(?array $sub): string {
 
 // ---------- Mercado Pago Assinaturas (preapproval recorrente) ----------
 
-// Cria a assinatura recorrente no Mercado Pago e devolve o init_point (URL do
-// checkout do MP onde o artista cadastra o cartão). Status nasce 'pending' até
-// o artista autorizar. Honra o período grátis do perk via free_trial.
+// external_reference que liga a assinatura ao artista.
+function sub_external_reference(int $artistId, string $planCode, string $period): string {
+  return 'sub-' . $artistId . '-' . $planCode . '-' . $period;
+}
+
+// Devolve a URL do checkout de assinatura do Mercado Pago para o artista.
+// Usa o fluxo HOSPEDADO (o MP coleta o cartão na tela dele): a assinatura via
+// API exige card_token_id (coletar cartão no nosso site), o que não fazemos.
+// Registra a intenção (pending) e amarra o artista pelo external_reference.
 function mp_create_subscription(PDO $pdo, array $artist, string $planCode, string $period): array {
   if (!in_array($planCode, ['gold', 'diamond'], true)) throw new RuntimeException('Plano inválido para assinatura.');
   if (!in_array($period, ['monthly', 'annual'], true)) $period = 'monthly';
 
-  $pl = $pdo->prepare('SELECT name, price_cents, price_annual_cents FROM plans WHERE code = ? AND active = 1');
-  $pl->execute([$planCode]);
-  $plan = $pl->fetch();
-  if (!$plan) throw new RuntimeException('Plano não encontrado.');
+  $mpPlanId = MP_PREAPPROVAL_PLANS[$planCode . '_' . $period] ?? '';
+  if ($mpPlanId === '') throw new RuntimeException('Este plano ainda não está disponível para assinatura.');
 
-  $amountCents = $period === 'annual' ? (int)$plan['price_annual_cents'] : (int)$plan['price_cents'];
-  if ($amountCents <= 0) throw new RuntimeException('Plano sem preço configurado.');
-  $amount = round($amountCents / 100, 2);
-  $freq = $period === 'annual' ? 12 : 1; // a cada 12 ou 1 mês
-
-  // Período grátis restante (perk "2 meses"): vira free_trial no MP, adiando a 1ª cobrança.
-  $sub = $pdo->prepare('SELECT free_until, mp_preapproval_id FROM subscriptions WHERE artist_id = ?');
-  $sub->execute([$artist['id']]);
-  $cur = $sub->fetch() ?: [];
-  $freeTrial = null;
-  if (!empty($cur['free_until']) && strtotime($cur['free_until']) > time()) {
-    $months = (int)ceil((strtotime($cur['free_until']) - time()) / (30 * 24 * 3600));
-    if ($months > 0) $freeTrial = ['frequency' => $months, 'frequency_type' => 'months'];
+  // Cancela a assinatura MP anterior (troca de plano) — best-effort.
+  $sub = $pdo->prepare('SELECT mp_preapproval_id FROM subscriptions WHERE artist_id = ?');
+  $sub->execute([(int)$artist['id']]);
+  $oldPre = $sub->fetchColumn();
+  if (!empty($oldPre)) {
+    try { mp_api('PUT', '/preapproval/' . $oldPre, ['status' => 'cancelled']); } catch (Throwable $e) { /* ignora */ }
   }
 
-  // Recorrência criada inline (sem referenciar preapproval_plan_id). Isso é
-  // proposital: assinatura COM plano via API exige card_token_id (Checkout
-  // Transparente — coletar dados do cartão no nosso site). Com status "pending"
-  // e sem plano, o MP devolve init_point e HOSPEDA a coleta do cartão, e a
-  // gente mantém o external_reference pro mapeamento confiável do artista.
-  // (Os planos do painel, em MP_PREAPPROVAL_PLANS, ficam de referência.)
-  $auto = [
-    'frequency' => $freq,          // 1 mês (mensal) ou 12 meses (anual)
-    'frequency_type' => 'months',
-    'transaction_amount' => $amount,
-    'currency_id' => 'BRL',
-  ];
-  if ($freeTrial) $auto['free_trial'] = $freeTrial;
+  // Registra a escolha como pendente (a ativação vem pelo webhook/confirm).
+  $pdo->prepare('UPDATE subscriptions SET plan_code = ?, period = ?, status = "pending", mp_preapproval_id = NULL WHERE artist_id = ?')
+    ->execute([$planCode, $period, (int)$artist['id']]);
 
-  $payload = [
-    'reason' => 'Galeria Millia — ' . $plan['name'] . ($period === 'annual' ? ' (anual)' : ' (mensal)'),
-    'external_reference' => 'sub-' . (int)$artist['id'] . '-' . $planCode . '-' . $period,
-    'payer_email' => $artist['email'],
-    'back_url' => SITE_BASE_URL . '/?assinatura=retorno',
-    'status' => 'pending',
-    'auto_recurring' => $auto,
-  ];
+  $extRef = sub_external_reference((int)$artist['id'], $planCode, $period);
+  // external_reference amarra a assinatura ao artista; se o MP não propagar,
+  // o webhook ainda mapeia pelo preapproval_plan_id + e-mail do pagador.
+  $url = 'https://www.mercadopago.com.br/subscriptions/checkout?preapproval_plan_id=' . rawurlencode($mpPlanId)
+    . '&external_reference=' . rawurlencode($extRef);
 
-  // Cancela uma assinatura MP anterior (troca de plano) — best-effort.
-  if (!empty($cur['mp_preapproval_id'])) {
-    try { mp_api('PUT', '/preapproval/' . $cur['mp_preapproval_id'], ['status' => 'cancelled']); } catch (Throwable $e) { /* ignora */ }
-  }
-
-  $pre = mp_api('POST', '/preapproval', $payload);
-  $preId = $pre['id'] ?? '';
-  if ($preId === '') throw new RuntimeException('Mercado Pago não retornou a assinatura.');
-
-  $pdo->prepare('UPDATE subscriptions SET plan_code = ?, period = ?, status = "pending", mp_preapproval_id = ? WHERE artist_id = ?')
-    ->execute([$planCode, $period, $preId, (int)$artist['id']]);
-
-  return ['initPoint' => $pre['init_point'] ?? '', 'preapprovalId' => $preId, 'status' => $pre['status'] ?? 'pending'];
+  return ['initPoint' => $url, 'preapprovalId' => '', 'status' => 'pending'];
 }
 
 // Aplica o estado de uma preapproval do MP ao artista. Idempotente.
 function apply_preapproval(PDO $pdo, array $pre): void {
+  $artistId = 0; $planCode = ''; $period = '';
   $ref = (string)($pre['external_reference'] ?? '');
-  // external_reference = "sub-<artistId>-<plan>-<period>"
-  if (!preg_match('/^sub-(\d+)-(gold|diamond)-(monthly|annual)$/', $ref, $m)) return;
-  $artistId = (int)$m[1]; $planCode = $m[2]; $period = $m[3];
+  if (preg_match('/^sub-(\d+)-(gold|diamond)-(monthly|annual)$/', $ref, $m)) {
+    // Caminho preferido: external_reference amarra o artista.
+    $artistId = (int)$m[1]; $planCode = $m[2]; $period = $m[3];
+  } else {
+    // Sem external_reference (checkout hospedado): mapeia pelo plano do MP +
+    // e-mail do pagador. array_flip: id do plano -> "gold_monthly".
+    $rev = array_flip(array_filter(MP_PREAPPROVAL_PLANS));
+    $key = $rev[(string)($pre['preapproval_plan_id'] ?? '')] ?? '';
+    if ($key !== '') { [$planCode, $period] = explode('_', $key); }
+    $email = strtolower(trim((string)($pre['payer_email'] ?? '')));
+    if ($email !== '' && $planCode !== '') {
+      $q = $pdo->prepare("SELECT id FROM users WHERE role = 'artist' AND deactivated = 0 AND LOWER(email) = ? LIMIT 1");
+      $q->execute([$email]);
+      $artistId = (int)$q->fetchColumn();
+    }
+  }
+  if (!$artistId || $planCode === '') return;
   $mpStatus = $pre['status'] ?? '';
   $map = ['authorized' => 'active', 'pending' => 'pending', 'paused' => 'paused', 'cancelled' => 'cancelled'];
   $status = $map[$mpStatus] ?? 'pending';

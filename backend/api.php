@@ -1721,16 +1721,33 @@ switch ($action) {
   }
 
   case 'confirm_subscription': {
-    // Chamado quando o artista volta do checkout do MP. Consulta a assinatura
-    // direto no MP (nunca confia no retorno da URL) e aplica o estado.
+    // Chamado quando o artista volta do checkout do MP. Como o checkout é
+    // hospedado, ainda não temos o id da assinatura — buscamos no MP pelo
+    // external_reference (e por e-mail, como reforço) e aplicamos o estado.
     $me = require_role('artist');
-    $s = $pdo->prepare('SELECT mp_preapproval_id FROM subscriptions WHERE artist_id = ?');
+    $s = $pdo->prepare('SELECT plan_code, period FROM subscriptions WHERE artist_id = ?');
     $s->execute([$me['id']]);
-    $preId = $s->fetchColumn();
-    if (!$preId) json_out(subscription_summary($pdo, (int)$me['id']));
+    $row = $s->fetch() ?: [];
     try {
-      $pre = mp_api('GET', '/preapproval/' . $preId);
-      apply_preapproval($pdo, $pre);
+      $items = [];
+      $planCode = $row['plan_code'] ?? '';
+      $period = $row['period'] ?? 'monthly';
+      if (in_array($planCode, ['gold', 'diamond'], true)) {
+        $ref = sub_external_reference((int)$me['id'], $planCode, $period);
+        $res = mp_api('GET', '/preapproval/search?external_reference=' . rawurlencode($ref));
+        $items = $res['results'] ?? [];
+      }
+      if (!$items) {
+        $res = mp_api('GET', '/preapproval/search?payer_email=' . rawurlencode($me['email']));
+        $items = $res['results'] ?? [];
+      }
+      // Aplica a mais recente autorizada; senão a mais recente encontrada.
+      $best = null;
+      foreach ($items as $it) {
+        if (($it['status'] ?? '') === 'authorized') { $best = $it; break; }
+        if ($best === null) $best = $it;
+      }
+      if ($best) apply_preapproval($pdo, $best);
     } catch (Throwable $e) {
       error_log('[assinatura] confirm: ' . $e->getMessage());
     }
