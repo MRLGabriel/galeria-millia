@@ -14,7 +14,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 // Defesa CSRF central: toda requisição que muda estado (POST) precisa vir do
 // próprio site. Exceção: o webhook do Mercado Pago, que é server-to-server (sem
 // Origin do nosso domínio) e é validado por assinatura HMAC dentro do handler.
-if ($method === 'POST' && $action !== 'mp_webhook') {
+if ($method === 'POST' && $action !== 'mp_webhook' && $action !== 'mp_subscription_webhook') {
   verify_origin();
 }
 
@@ -421,7 +421,7 @@ switch ($action) {
     }
 
     // Assinaturas (Fase 1): catálogo de planos + assinatura do artista logado.
-    $plans = $pdo->query('SELECT code, name, price_cents AS priceCents, features FROM plans WHERE active = 1 ORDER BY sort_order')->fetchAll();
+    $plans = $pdo->query('SELECT code, name, price_cents AS priceCents, price_annual_cents AS priceAnnualCents, features FROM plans WHERE active = 1 ORDER BY sort_order')->fetchAll();
     foreach ($plans as &$pl) { $pl['features'] = json_decode($pl['features'], true) ?: []; }
     unset($pl);
     $mySubscription = ($me && $me['role'] === 'artist') ? subscription_summary($pdo, (int)$me['id']) : null;
@@ -1695,6 +1695,72 @@ switch ($action) {
     $b = body();
     $id = (int)($b['itemId'] ?? 0);
     $pdo->prepare('UPDATE order_items SET payout_done = 0, payout_at = NULL WHERE id = ?')->execute([$id]);
+    json_out(['ok' => true]);
+  }
+
+  // ================= ASSINATURAS (ARTISTA) =================
+
+  case 'subscribe': {
+    // Artista escolhe um plano pago (gold/diamond) mensal/anual. Cria a
+    // assinatura recorrente no MP e devolve o link do checkout do MP.
+    $me = require_role('artist');
+    require_verified_email($me);
+    rate_limit_or_die('subscribe', 10, 300);
+    $b = body();
+    $planCode = $b['plan'] ?? '';
+    $period = $b['period'] ?? 'monthly';
+    try {
+      $res = mp_create_subscription($pdo, $me, $planCode, $period);
+    } catch (RuntimeException $e) {
+      json_error($e->getMessage(), 400);
+    } catch (Throwable $e) {
+      error_log('[assinatura] falha ao criar assinatura do artista ' . $me['id'] . ': ' . $e->getMessage());
+      json_error('Não foi possível iniciar a assinatura. Tente novamente em instantes.', 502);
+    }
+    json_out(['ok' => true, 'initPoint' => $res['initPoint'], 'status' => $res['status']]);
+  }
+
+  case 'confirm_subscription': {
+    // Chamado quando o artista volta do checkout do MP. Consulta a assinatura
+    // direto no MP (nunca confia no retorno da URL) e aplica o estado.
+    $me = require_role('artist');
+    $s = $pdo->prepare('SELECT mp_preapproval_id FROM subscriptions WHERE artist_id = ?');
+    $s->execute([$me['id']]);
+    $preId = $s->fetchColumn();
+    if (!$preId) json_out(subscription_summary($pdo, (int)$me['id']));
+    try {
+      $pre = mp_api('GET', '/preapproval/' . $preId);
+      apply_preapproval($pdo, $pre);
+    } catch (Throwable $e) {
+      error_log('[assinatura] confirm: ' . $e->getMessage());
+    }
+    json_out(subscription_summary($pdo, (int)$me['id']));
+  }
+
+  case 'cancel_subscription': {
+    $me = require_role('artist');
+    cancel_mp_subscription($pdo, (int)$me['id']);
+    json_out(['ok' => true, 'subscription' => subscription_summary($pdo, (int)$me['id'])]);
+  }
+
+  case 'mp_subscription_webhook': {
+    // Notificação server-to-server do MP sobre a assinatura (preapproval).
+    // Sempre responde 200; erros vão pro log.
+    $type = $_GET['type'] ?? ($_GET['topic'] ?? '');
+    $id = $_GET['data_id'] ?? ($_GET['id'] ?? '');
+    if ($id === '') {
+      $raw = json_decode(file_get_contents('php://input'), true);
+      $id = $raw['data']['id'] ?? ($raw['id'] ?? '');
+      if ($type === '') $type = $raw['type'] ?? ($raw['topic'] ?? '');
+    }
+    if ($id !== '' && (strpos((string)$type, 'preapproval') !== false || $type === 'subscription_preapproval')) {
+      try {
+        $pre = mp_api('GET', '/preapproval/' . preg_replace('/[^a-zA-Z0-9-]/', '', (string)$id));
+        apply_preapproval($pdo, $pre);
+      } catch (Throwable $e) {
+        error_log('[assinatura] webhook: ' . $e->getMessage());
+      }
+    }
     json_out(['ok' => true]);
   }
 
