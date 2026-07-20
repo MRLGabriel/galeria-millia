@@ -134,29 +134,28 @@ function mp_create_subscription(PDO $pdo, array $artist, string $planCode, strin
     if ($months > 0) $freeTrial = ['frequency' => $months, 'frequency_type' => 'months'];
   }
 
+  // Recorrência criada inline (sem referenciar preapproval_plan_id). Isso é
+  // proposital: assinatura COM plano via API exige card_token_id (Checkout
+  // Transparente — coletar dados do cartão no nosso site). Com status "pending"
+  // e sem plano, o MP devolve init_point e HOSPEDA a coleta do cartão, e a
+  // gente mantém o external_reference pro mapeamento confiável do artista.
+  // (Os planos do painel, em MP_PREAPPROVAL_PLANS, ficam de referência.)
+  $auto = [
+    'frequency' => $freq,          // 1 mês (mensal) ou 12 meses (anual)
+    'frequency_type' => 'months',
+    'transaction_amount' => $amount,
+    'currency_id' => 'BRL',
+  ];
+  if ($freeTrial) $auto['free_trial'] = $freeTrial;
+
   $payload = [
     'reason' => 'Galeria Millia — ' . $plan['name'] . ($period === 'annual' ? ' (anual)' : ' (mensal)'),
     'external_reference' => 'sub-' . (int)$artist['id'] . '-' . $planCode . '-' . $period,
     'payer_email' => $artist['email'],
     'back_url' => SITE_BASE_URL . '/?assinatura=retorno',
     'status' => 'pending',
+    'auto_recurring' => $auto,
   ];
-
-  // Se existe um plano pronto no MP pra esse (plano+período), referencia ele —
-  // a recorrência (valor, ciclo, trial) vem do plano. Senão, cria inline.
-  $mpPlanId = MP_PREAPPROVAL_PLANS[$planCode . '_' . $period] ?? '';
-  if ($mpPlanId !== '') {
-    $payload['preapproval_plan_id'] = $mpPlanId;
-  } else {
-    $auto = [
-      'frequency' => $freq,
-      'frequency_type' => 'months',
-      'transaction_amount' => $amount,
-      'currency_id' => 'BRL',
-    ];
-    if ($freeTrial) $auto['free_trial'] = $freeTrial;
-    $payload['auto_recurring'] = $auto;
-  }
 
   // Cancela uma assinatura MP anterior (troca de plano) — best-effort.
   if (!empty($cur['mp_preapproval_id'])) {
