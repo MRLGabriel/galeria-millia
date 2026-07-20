@@ -136,7 +136,7 @@ function mp_create_subscription(PDO $pdo, array $artist, string $planCode, strin
     'reason' => 'Galeria Millia — ' . $plan['name'] . ($period === 'annual' ? ' (anual)' : ' (mensal)'),
     'external_reference' => 'sub-' . (int)$artist['id'] . '-' . $planCode . '-' . $period,
     'payer_email' => $artist['email'],
-    'back_url' => SITE_BASE_URL . '/',
+    'back_url' => SITE_BASE_URL . '/?assinatura=retorno',
     'status' => 'pending',
     'auto_recurring' => $auto,
   ];
