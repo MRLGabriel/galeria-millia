@@ -12,6 +12,7 @@
 // Quantos artistas ganham cada perk de lançamento (por ordem de cadastro).
 const PERK_INSTAGRAM_FIRST  = 5;   // publicações no Instagram da galeria sem custo
 const PERK_TWO_MONTHS_FIRST = 10;  // 2 meses de Gold sem cobrança
+const PERK_CYCLE_QUOTA      = 10;  // cota de novas obras por ciclo durante o período grátis (montar a galeria)
 
 // IDs dos planos de assinatura criados no painel do Mercado Pago (Assinaturas).
 // Quando existir, a recorrência (valor, ciclo, trial) vem do plano do MP.
@@ -225,6 +226,11 @@ function artist_obra_quota(PDO $pdo, int $artistId): array {
   $period = $sub['period'] ?? 'monthly';
   $key = ($period === 'annual' && array_key_exists('obras_cycle_annual', $f)) ? 'obras_cycle_annual' : 'obras_cycle';
   $quota = array_key_exists($key, $f) ? $f[$key] : null;
+  // Durante o período grátis do perk (2 meses), cota ampliada pra o artista
+  // montar a galeria — nunca reduz uma cota que já seja maior.
+  if ($sub && !empty($sub['free_until']) && strtotime($sub['free_until']) > time()) {
+    $quota = $quota === null ? null : max((int)$quota, PERK_CYCLE_QUOTA);
+  }
   $cycleStart = obra_cycle_start($sub);
   $c = $pdo->prepare('SELECT COUNT(*) FROM artworks WHERE artist_id = ? AND created_at >= ?');
   $c->execute([$artistId, $cycleStart]);
