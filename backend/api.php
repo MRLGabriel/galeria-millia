@@ -766,6 +766,24 @@ switch ($action) {
     }
     $price = round((float)($b['price'] ?? 0) * 100);
     if ($price <= 0) json_error('Informe um preço válido, maior que zero');
+
+    // Limites do plano (cota de novas obras por ciclo mensal + coleções).
+    // Artista no período grátis do perk conta como Gold.
+    $quota = artist_obra_quota($pdo, (int)$me['id']);
+    // Coleção: só bloqueia criar uma coleção NOVA acima do limite —
+    // grandfathering: as coleções que já existem continuam podendo ser usadas.
+    $colName = trim($b['collection'] ?? '');
+    if ($colName !== '' && $quota['max_colecoes'] !== null) {
+      $exC = $pdo->prepare('SELECT id FROM collections WHERE artist_id = ? AND name = ?');
+      $exC->execute([$me['id'], $colName]);
+      if (!$exC->fetch()) {
+        $cc = $pdo->prepare('SELECT COUNT(*) FROM collections WHERE artist_id = ?');
+        $cc->execute([$me['id']]);
+        if ((int)$cc->fetchColumn() >= (int)$quota['max_colecoes']) {
+          json_error('Criar coleções é um recurso dos planos Gold e Diamond. Assine para organizar suas obras em coleções.', 403);
+        }
+      }
+    }
     $colId = collection_id_for($pdo, (int)$me['id'], $b['collection'] ?? '');
     $desc = $b['desc'] ?? '';
     $technique = trim((string)($b['technique'] ?? ''));
@@ -799,6 +817,10 @@ switch ($action) {
       json_out(['ok' => true, 'id' => (int)$b['id']]);
     } else {
       require_verified_email($me);
+      // Cota de novas obras do ciclo mensal (a cota renova na próxima cobrança).
+      if ($quota['quota'] !== null && $quota['used'] >= $quota['quota']) {
+        json_error('Você atingiu o limite de ' . $quota['quota'] . ' nova(s) obra(s) neste ciclo. A cota renova na próxima renovação do plano — ou assine um plano maior para publicar mais agora.', 403);
+      }
       $ins = $pdo->prepare('INSERT INTO artworks (artist_id, category_id, collection_id, title, slug, technique, description, price_cents, width_cm, height_cm, edition_size,
                              package_weight_kg, package_length_cm, package_width_cm, package_height_cm, approved, sold)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 60, 45, ?, ?, ?, ?, ?, 0, 0)');

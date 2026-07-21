@@ -21,10 +21,14 @@ CREATE TABLE plans (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Anual = 10x o mensal (2 meses grátis). Ajuste os valores se quiser outro desconto.
+-- features:
+--   obras_cycle        = novas obras por ciclo MENSAL (plano mensal)
+--   obras_cycle_annual = novas obras por ciclo mensal (plano anual)
+--   max_colecoes       = coleções (0 = não pode criar; null = ilimitado)
 INSERT INTO plans (code, name, price_cents, price_annual_cents, features, sort_order) VALUES
- ('free',    'Free',    0,    0,     '{"max_obras":10,"max_colecoes":0,"acervo":false,"adote_artista":false}',      1),
- ('gold',    'Gold',    2990, 29900, '{"max_obras":null,"max_colecoes":null,"acervo":true,"adote_artista":false}',  2),
- ('diamond', 'Diamond', 3990, 39900, '{"max_obras":null,"max_colecoes":null,"acervo":true,"adote_artista":true}',  3);
+ ('free',    'Free',    0,    0,     '{"obras_cycle":1,"max_colecoes":0,"acervo":false,"adote_artista":false}',                             1),
+ ('gold',    'Gold',    2990, 29900, '{"obras_cycle":2,"obras_cycle_annual":5,"max_colecoes":null,"acervo":true,"adote_artista":false}',   2),
+ ('diamond', 'Diamond', 3990, 39900, '{"obras_cycle":5,"obras_cycle_annual":10,"max_colecoes":null,"acervo":true,"adote_artista":true}',  3);
 
 -- Assinatura atual de cada artista (uma por artista). A cobrança recorrente
 -- via Mercado Pago (Assinaturas) grava o id do preapproval e o fim do período.

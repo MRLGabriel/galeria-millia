@@ -197,6 +197,46 @@ function cancel_mp_subscription(PDO $pdo, int $artistId): void {
     ->execute([$artistId]);
 }
 
+// Início do ciclo MENSAL atual da cota de obras. Ancorado no dia da renovação
+// (dia do mês da assinatura) — vale também pro plano anual, cuja cota é mensal.
+// Sem assinatura com data, cai no mês do calendário.
+function obra_cycle_start(?array $sub): string {
+  $src = null;
+  if ($sub && !empty($sub['current_period_end'])) $src = $sub['current_period_end'];
+  elseif ($sub && !empty($sub['started_at'])) $src = $sub['started_at'];
+  $now = time();
+  if (!$src) return date('Y-m-01 00:00:00', $now); // Free sem histórico: mês do calendário
+  $anchorDay = (int)date('j', strtotime($src));
+  $y = (int)date('Y', $now); $m = (int)date('n', $now); $today = (int)date('j', $now);
+  if ($today < $anchorDay) { $m--; if ($m < 1) { $m = 12; $y--; } }
+  $dim = (int)date('t', mktime(0, 0, 0, $m, 1, $y));   // dias no mês (trata fim de mês)
+  $day = min($anchorDay, $dim);
+  return sprintf('%04d-%02d-%02d 00:00:00', $y, $m, $day);
+}
+
+// Cota de novas obras do artista neste ciclo (plano efetivo + período),
+// quantas já usou e o limite de coleções. quota = null significa ilimitado.
+function artist_obra_quota(PDO $pdo, int $artistId): array {
+  $s = $pdo->prepare('SELECT plan_code, period, status, mp_preapproval_id, free_until, started_at, current_period_end FROM subscriptions WHERE artist_id = ?');
+  $s->execute([$artistId]);
+  $sub = $s->fetch() ?: null;
+  $eff = effective_plan_code($sub);
+  $f = plan_features($pdo, $eff);
+  $period = $sub['period'] ?? 'monthly';
+  $key = ($period === 'annual' && array_key_exists('obras_cycle_annual', $f)) ? 'obras_cycle_annual' : 'obras_cycle';
+  $quota = array_key_exists($key, $f) ? $f[$key] : null;
+  $cycleStart = obra_cycle_start($sub);
+  $c = $pdo->prepare('SELECT COUNT(*) FROM artworks WHERE artist_id = ? AND created_at >= ?');
+  $c->execute([$artistId, $cycleStart]);
+  return [
+    'plan'         => $eff,
+    'quota'        => $quota === null ? null : (int)$quota,   // novas obras por ciclo
+    'used'         => (int)$c->fetchColumn(),
+    'cycleStart'   => $cycleStart,
+    'max_colecoes' => array_key_exists('max_colecoes', $f) ? $f['max_colecoes'] : null,
+  ];
+}
+
 // Assinatura + perks de um artista, já com o plano efetivo resolvido.
 function subscription_summary(PDO $pdo, int $artistId): array {
   $s = $pdo->prepare('SELECT plan_code, period, status, mp_preapproval_id, current_period_end, free_until, cancel_at FROM subscriptions WHERE artist_id = ?');
@@ -206,6 +246,7 @@ function subscription_summary(PDO $pdo, int $artistId): array {
   $p->execute([$artistId]);
   $perks = $p->fetchAll(PDO::FETCH_COLUMN);
   $effective = effective_plan_code($sub);
+  $q = artist_obra_quota($pdo, $artistId);
   return [
     'plan'        => $sub['plan_code'] ?? 'free',   // plano contratado
     'effective'   => $effective,                    // plano válido agora (com período grátis)
@@ -216,5 +257,10 @@ function subscription_summary(PDO $pdo, int $artistId): array {
     'cancelAt'    => $sub['cancel_at'] ?? null,
     'hasMp'       => !empty($sub['mp_preapproval_id']),
     'perks'       => $perks,
+    // Cota de novas obras do ciclo atual (pra mostrar "X de Y neste ciclo").
+    'obraQuota'   => $q['quota'],                    // null = ilimitado
+    'obraUsed'    => $q['used'],
+    'cycleStart'  => $q['cycleStart'],
+    'maxColecoes' => $q['max_colecoes'],
   ];
 }
